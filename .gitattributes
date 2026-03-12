@@ -1,0 +1,20 @@
+# Always normalize line endings to LF
+* text=auto eol=lf
+
+# Explicitly mark text files
+*.py   text eol=lf
+*.md   text eol=lf
+*.rst  text eol=lf
+*.yml  text eol=lf
+*.toml text eol=lf
+*.ini  text eol=lf
+
+# Explicitly mark binary files
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.xlsx binary
+.coverage binary
