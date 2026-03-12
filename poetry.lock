@@ -412,21 +412,6 @@ docs = ["furo (>=2025.12.19)", "sphinx (>=9.1)", "sphinx-autodoc-typehints (>=3.
 testing = ["covdefaults (>=2.3)", "coverage (>=7.5.4)", "pytest (>=8.3.5)", "pytest-mock (>=3.14)", "setuptools (>=75.1)"]
 
 [[package]]
-name = "python-nomad"
-version = "2.1.0"
-description = "Client library for Hashicorp Nomad"
-optional = false
-python-versions = "*"
-groups = ["main"]
-files = [
-    {file = "python_nomad-2.1.0-py3-none-any.whl", hash = "sha256:9c48a48d3b1774176a690493ad72d27a585714d0f2396752f9d1b6c7c1901458"},
-    {file = "python_nomad-2.1.0.tar.gz", hash = "sha256:53e6d9ec6f66b672ae9d6d03591a24be2d8b5450dd7fdbe1003831cb9b77f847"},
-]
-
-[package.dependencies]
-requests = "*"
-
-[[package]]
 name = "pyupgrade"
 version = "3.21.2"
 description = "A tool to automatically upgrade syntax for newer versions."
@@ -637,4 +622,4 @@ python-discovery = ">=1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<3.14"
-content-hash = "4b120638ba409172397eb658b1135e9e30c28ad8aa610e4c146a413892eae5cd"
+content-hash = "d43b3461f22d2269bf7c362039ace4f63bb437397c719aa6663fec3fb542755e"
