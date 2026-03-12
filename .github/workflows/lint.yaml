@@ -1,0 +1,42 @@
+name: lint
+
+on:
+    workflow_run:
+      workflows: ["ruff"]
+      types:
+        - completed
+
+jobs:
+  lint_python:
+
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        python-version: [3.12.x]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install linting dependencies
+        run: uv pip install --system --requirements requirements.linters.txt
+
+      - run: shopt -s globstar && pyupgrade --py312-plus **/*.py
+
+      - run: ruff format --diff .
+
+      - run: codespell . --ignore-words .codespellignore

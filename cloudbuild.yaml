@@ -1,0 +1,21 @@
+steps:
+  - name: gcr.io/kaniko-project/executor:${_KANIKO_TAG}
+    args:
+      - --destination=eu.gcr.io/$PROJECT_ID/$REPO_NAME:${_BUILD_TAG}
+      - --cache=true
+      - --cache-ttl=48h
+      - --dockerfile=Dockerfile
+      - --context=.
+      - --build-arg
+      - REPO_NAME=$REPO_NAME
+      - --build-arg
+      - BRANCH_NAME=$BRANCH_NAME
+      - --build-arg
+      - REVISION_ID=$REVISION_ID
+      - --build-arg
+      - COMMIT_SHA=$COMMIT_SHA
+      - --build-arg
+      - SHORT_SHA=$SHORT_SHA
+substitutions:
+  _BUILD_TAG: ${COMMIT_SHA}
+  _KANIKO_TAG: latest

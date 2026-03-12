@@ -1,6 +1,15 @@
 .git
 .gitignore
-env
+.venv
+.pre-commit-config.yaml
+.editorconfig
 env.sample
 .env
 README.md
+docs/
+tests/
+poetry.toml
+poetry.lock
+pyproject.toml
+requirements.tests.txt
+requirements.linters.txt
