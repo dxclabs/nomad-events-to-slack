@@ -31,9 +31,20 @@ jobs:
           export BRANCH_NAME=$(echo "${{ env.UNSAFE_BRANCH_NAME }}" | sed 's|/|-|g' | sed 's|[^a-zA-Z0-9_-]||g')
           echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
+      - name: Set deploy path
+        run: |
+          CONSUL_ROOT="${{ vars.CONSUL_ROOT }}"
+          if [ -n "$CONSUL_ROOT" ] && [ "$CONSUL_ROOT" != "apps" ]; then
+            echo "DEPLOY_PATH=$CONSUL_ROOT/${{ github.event.repository.name }}" >> $GITHUB_ENV
+          else
+            echo "DEPLOY_PATH=${{ github.event.repository.name }}" >> $GITHUB_ENV
+          fi
+
       - name: Debug secrets and vars
         run: |
           echo "BRANCH_NAME: ${BRANCH_NAME}"
+          echo "DEPLOY_PATH: ${DEPLOY_PATH}"
+          [ -n "${{ vars.CONSUL_ROOT }}" ] && echo "CONSUL_ROOT: ${{ vars.CONSUL_ROOT }}"
           echo "CF_ACCESS_CLIENT_ID: ${CF_ACCESS_CLIENT_ID}"
           echo "CF_ACCESS_CLIENT_SECRET is available: ${CF_ACCESS_CLIENT_SECRET:+Yes}"
           echo "CONSUL_TOKEN is available: ${CONSUL_TOKEN:+Yes}"
@@ -41,9 +52,9 @@ jobs:
 
       - name: Trigger Deploy PR
         run: |
-          echo "deploying PR ${{ github.event.repository.name }} ${{ env.BRANCH_NAME }} ${{ env.COMMIT_SHA }}"
+          echo "deploying PR ${{ env.DEPLOY_PATH }} ${{ env.BRANCH_NAME }} ${{ env.COMMIT_SHA }}"
           curl --version
-          curl --fail -o output -X PUT -H "Content-Type: text/plain" -H "CF-Access-Client-Id: ${{ vars.CF_ACCESS_CLIENT_ID}}" -H "CF-Access-Client-Secret: ${{ secrets.CF_ACCESS_CLIENT_SECRET}}" -H "X-Consul-Token: ${{ secrets.CONSUL_TOKEN }}" --data "${{ env.COMMIT_SHA }}" "https://api.r2unit.io/v1/deploy/${{ github.event.repository.name }}/${{ env.BRANCH_NAME }}"
+          curl --fail -o output -X PUT -H "Content-Type: text/plain" -H "CF-Access-Client-Id: ${{ vars.CF_ACCESS_CLIENT_ID}}" -H "CF-Access-Client-Secret: ${{ secrets.CF_ACCESS_CLIENT_SECRET}}" -H "X-Consul-Token: ${{ secrets.CONSUL_TOKEN }}" --data "${{ env.COMMIT_SHA }}" "https://api.r2unit.io/v1/deploy/${{ env.DEPLOY_PATH }}/${{ env.BRANCH_NAME }}"
           cat output
 
   deploy_branch:
@@ -65,9 +76,20 @@ jobs:
           export BRANCH_NAME=$(echo "${{ env.UNSAFE_BRANCH_NAME }}" | sed 's|/|-|g' | sed 's|[^a-zA-Z0-9_-]||g')
           echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
+      - name: Set deploy path
+        run: |
+          CONSUL_ROOT="${{ vars.CONSUL_ROOT }}"
+          if [ -n "$CONSUL_ROOT" ] && [ "$CONSUL_ROOT" != "apps" ]; then
+            echo "DEPLOY_PATH=$CONSUL_ROOT/${{ github.event.repository.name }}" >> $GITHUB_ENV
+          else
+            echo "DEPLOY_PATH=${{ github.event.repository.name }}" >> $GITHUB_ENV
+          fi
+
       - name: Debug secrets and vars
         run: |
           echo "BRANCH_NAME: ${BRANCH_NAME}"
+          echo "DEPLOY_PATH: ${DEPLOY_PATH}"
+          [ -n "${{ vars.CONSUL_ROOT }}" ] && echo "CONSUL_ROOT: ${{ vars.CONSUL_ROOT }}"
           echo "CF_ACCESS_CLIENT_ID: ${CF_ACCESS_CLIENT_ID}"
           echo "CF_ACCESS_CLIENT_SECRET is available: ${CF_ACCESS_CLIENT_SECRET:+Yes}"
           echo "CONSUL_TOKEN is available: ${CONSUL_TOKEN:+Yes}"
@@ -75,7 +97,7 @@ jobs:
 
       - name: Trigger Deploy Branch
         run: |
-          echo "deploying ${{ github.event.repository.name }} ${{ env.BRANCH_NAME }} ${{ env.COMMIT_SHA }}"
+          echo "deploying ${{ env.DEPLOY_PATH }} ${{ env.BRANCH_NAME }} ${{ env.COMMIT_SHA }}"
           curl --version
-          curl --fail -o output -X PUT -H "Content-Type: text/plain" -H "CF-Access-Client-Id: ${{ vars.CF_ACCESS_CLIENT_ID}}" -H "CF-Access-Client-Secret: ${{ secrets.CF_ACCESS_CLIENT_SECRET}}" -H "X-Consul-Token: ${{ secrets.CONSUL_TOKEN }}" --data "${{ env.COMMIT_SHA }}" "https://api.r2unit.io/v1/deploy/${{ github.event.repository.name }}/${{ env.BRANCH_NAME }}"
+          curl --fail -o output -X PUT -H "Content-Type: text/plain" -H "CF-Access-Client-Id: ${{ vars.CF_ACCESS_CLIENT_ID}}" -H "CF-Access-Client-Secret: ${{ secrets.CF_ACCESS_CLIENT_SECRET}}" -H "X-Consul-Token: ${{ secrets.CONSUL_TOKEN }}" --data "${{ env.COMMIT_SHA }}" "https://api.r2unit.io/v1/deploy/${{ env.DEPLOY_PATH }}/${{ env.BRANCH_NAME }}"
           cat output
