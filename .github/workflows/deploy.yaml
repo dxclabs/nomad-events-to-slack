@@ -1,0 +1,81 @@
+name: deploy
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+env:
+  COMMIT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+  UNSAFE_BRANCH_NAME: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name }}
+
+jobs:
+  deploy_pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    name: Deploy PR on Nomad
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft && github.actor != 'dependabot[bot]'
+    steps:
+      - name: Wait for build, lint and test checks
+        uses: lewagon/wait-on-check-action@v1.5.0
+        with:
+          ref: ${{ env.COMMIT_SHA }}
+          running-workflow-name: 'Deploy PR on Nomad'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 10
+
+      - name: Set safe branch name
+        run: |
+          export BRANCH_NAME=$(echo "${{ env.UNSAFE_BRANCH_NAME }}" | sed 's|/|-|g' | sed 's|[^a-zA-Z0-9_-]||g')
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+
+      - name: Debug secrets and vars
+        run: |
+          echo "BRANCH_NAME: ${BRANCH_NAME}"
+          echo "CF_ACCESS_CLIENT_ID: ${CF_ACCESS_CLIENT_ID}"
+          echo "CF_ACCESS_CLIENT_SECRET is available: ${CF_ACCESS_CLIENT_SECRET:+Yes}"
+          echo "CONSUL_TOKEN is available: ${CONSUL_TOKEN:+Yes}"
+          echo "COMMIT_SHA: ${COMMIT_SHA}"
+
+      - name: Trigger Deploy PR
+        run: |
+          echo "deploying PR ${{ github.event.repository.name }} ${{ env.BRANCH_NAME }} ${{ env.COMMIT_SHA }}"
+          curl --version
+          curl --fail -o output -X PUT -H "Content-Type: text/plain" -H "CF-Access-Client-Id: ${{ vars.CF_ACCESS_CLIENT_ID}}" -H "CF-Access-Client-Secret: ${{ secrets.CF_ACCESS_CLIENT_SECRET}}" -H "X-Consul-Token: ${{ secrets.CONSUL_TOKEN }}" --data "${{ env.COMMIT_SHA }}" "https://api.r2unit.io/v1/deploy/${{ github.event.repository.name }}/${{ env.BRANCH_NAME }}"
+          cat output
+
+  deploy_branch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    name: Deploy Branch on Nomad
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Wait for build, lint and test checks
+        uses: lewagon/wait-on-check-action@v1.5.0
+        with:
+          ref: ${{ env.COMMIT_SHA }}
+          running-workflow-name: 'Deploy Branch on Nomad'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 10
+
+      - name: Set safe branch name
+        run: |
+          export BRANCH_NAME=$(echo "${{ env.UNSAFE_BRANCH_NAME }}" | sed 's|/|-|g' | sed 's|[^a-zA-Z0-9_-]||g')
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+
+      - name: Debug secrets and vars
+        run: |
+          echo "BRANCH_NAME: ${BRANCH_NAME}"
+          echo "CF_ACCESS_CLIENT_ID: ${CF_ACCESS_CLIENT_ID}"
+          echo "CF_ACCESS_CLIENT_SECRET is available: ${CF_ACCESS_CLIENT_SECRET:+Yes}"
+          echo "CONSUL_TOKEN is available: ${CONSUL_TOKEN:+Yes}"
+          echo "COMMIT_SHA: ${COMMIT_SHA}"
+
+      - name: Trigger Deploy Branch
+        run: |
+          echo "deploying ${{ github.event.repository.name }} ${{ env.BRANCH_NAME }} ${{ env.COMMIT_SHA }}"
+          curl --version
+          curl --fail -o output -X PUT -H "Content-Type: text/plain" -H "CF-Access-Client-Id: ${{ vars.CF_ACCESS_CLIENT_ID}}" -H "CF-Access-Client-Secret: ${{ secrets.CF_ACCESS_CLIENT_SECRET}}" -H "X-Consul-Token: ${{ secrets.CONSUL_TOKEN }}" --data "${{ env.COMMIT_SHA }}" "https://api.r2unit.io/v1/deploy/${{ github.event.repository.name }}/${{ env.BRANCH_NAME }}"
+          cat output

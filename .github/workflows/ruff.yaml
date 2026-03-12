@@ -1,0 +1,53 @@
+name: ruff
+
+on: [ push ]
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0  # Fetch full history for git diff
+
+      - name: Get changed Python files
+        id: changed
+        run: |
+          # Diff against previous commit (or empty tree for first push)
+          changed_files=$(git diff --name-only --diff-filter=d ${{ github.event.before }} HEAD -- '*.py' | xargs echo)
+          echo "files=$changed_files" >> $GITHUB_OUTPUT
+          echo "Changed Python files: $changed_files"
+
+      - name: Ruff Check
+        if: steps.changed.outputs.files != ''
+        uses: astral-sh/ruff-action@v3
+        with:
+          src: ${{ steps.changed.outputs.files }}
+          args: >
+            check
+            --ignore A001,A002,A003
+            --ignore ANN001,ANN002,ANN003,ANN201,ANN202,ANN204,ANN206
+            --ignore ARG001,ARG002,ARG005
+            --ignore B006,B007,B008,B009,B012,B018,B020,B026,B028,B904,B905
+            --ignore BLE001
+            --ignore C408,C411,C413,C419,C901
+            --ignore DTZ001,DTZ002,DTZ003,DTZ004,DTZ005,DTZ007,DTZ011
+            --ignore E402,E501,E713,E722,E731,E741
+            --ignore EXE001,EXE002
+            --ignore F401,F403,F405,F541,F811,F841
+            --ignore FBT001,FBT002,FBT003
+            --ignore G001,G002,G003,G004,G201,G202
+            --ignore I001,INT001,INT002,INT003
+            --ignore ISC001,ISC002,ISC003
+            --ignore PTH100,PTH106,PTH107,PTH109,PTH112,PTH114,PTH118,PTH119,PTH120,PTH122,PTH123,PTH206,PTH207
+            --ignore Q000,Q002
+            --ignore RET501,RET502,RET503,RET504,RET505,RET506,RET507
+            --ignore RSE102
+            --ignore S101,S105,S106,S108,S110,S112,S113,S307,S308,S310,S311,S324,S603
+            --ignore SIM101,SIM102,SIM103,SIM105,SIM108,SIM114,SIM115,SIM116,SIM201,SIM210,SIM401
+            --ignore SLF001
+            --ignore T201
+            --ignore UP017,UP031,UP032,UP038

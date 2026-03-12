@@ -1,0 +1,61 @@
+[project]
+name = "nomad-events-to-slack"
+version = "0.1.0"
+description = "Forward Hashicorp Nomad allocation events to Slack"
+authors = [{name = "DXCLABS LTD"}]
+requires-python = ">=3.12,<3.14"
+
+dependencies = [
+    "python-consul2>=0.1.5,<0.2.0",
+    "python-nomad>=2.0.0,<3.0.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+markers = [
+    "integration: mark test as integration test requiring external resources",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+  "A", "ANN", "ARG", "B", "BLE001", "C4", "C90", "DTZ", "E", "EXE", "F",
+  "FBT", "G", "I", "INT", "ISC", "PTH", "Q", "RSE", "RET", "S", "SIM",
+  "SLF", "T10", "T20", "UP"
+]
+ignore = ["ISC001"]
+
+unfixable = ["B"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ARG001", "ARG002", "ANN001", "ANN201", "ANN202", "F841", "S101", "S106", "SLF001", "SIM117"]
+
+[tool.ty.environment]
+root = ["."]
+
+[dependency-groups]
+linters = [
+    "codespell>=2.4.1,<3.0.0",
+    "pyupgrade>=3.20.0,<4.0.0",
+    "ruff>=0.11.0,<0.12.0",
+]
+tests = [
+    "pytest>=8.4.0,<9.0.0",
+    "pytest-mock>=3.14.0,<4.0.0",
+]
+dev = [
+    "pre-commit>=4.2.0,<5.0.0",
+]
+
+[tool.poetry]
+package-mode = false
+
+[tool.poetry.requires-plugins]
+poetry-plugin-export = ">=1.8"
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"

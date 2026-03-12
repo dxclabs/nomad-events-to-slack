@@ -1,29 +1,18 @@
-FROM python:3.8.6-alpine
+FROM registry.access.redhat.com/ubi9/python-312:latest
 
-ENV PIP_NO_CACHE_DIR=on \
-    # https://github.com/pypa/pip/blob/master/src/pip/_internal/cli/cmdoptions.py
-	PIP_DISABLE_PIP_VERSION_CHECK=on \
-	PIP_DEFAULT_TIMEOUT=100 \
-	# https://github.com/pypa/pipenv
-	PKG_PIPENV_VERSION=2020.8.13
+USER root
 
-# Copy only requirements, to cache them in docker layer
-WORKDIR /pysetup
-COPY ./Pipfile.lock ./Pipfile /pysetup/
+RUN pip install --no-cache-dir "poetry>=2.0,<3.0"
 
-# Update system and install app dependencies
-RUN set -ex \
-    && apk update \
-    && apk upgrade \
-    && pip install "pipenv==$PKG_PIPENV_VERSION" \
-    && pipenv install --system --dev --deploy \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -rf /var/cache/apk/* \
-    && rm -rf /usr/share/man \
-    && rm -rf /tmp/*
+WORKDIR /opt/app-root/src
 
-COPY ./app.py /app/
-WORKDIR /app
+COPY pyproject.toml poetry.lock ./
 
-CMD ["python", "./app.py"]
+RUN poetry config virtualenvs.create false && \
+    poetry install --only main --no-interaction
 
+USER 1001
+
+COPY app.py .
+
+CMD ["python", "app.py"]
