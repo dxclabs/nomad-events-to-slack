@@ -28,8 +28,12 @@ def clear_input_list(in_list: list[str]) -> None:
 def get_stored_index(c_consul: consul.Consul, key: str) -> int:
     _, data = c_consul.kv.get(key)
     if data and data["Value"]:
-        stored = json.loads(data["Value"].decode("utf-8"))
-        return int(stored.get("index", 0))
+        try:
+            stored = json.loads(data["Value"].decode("utf-8"))
+            return int(stored.get("index", 0))
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("Consul key %s has unreadable value, resetting to 0", key)
+            return 0
     return 0
 
 
