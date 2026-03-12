@@ -1,5 +1,6 @@
 Release type: minor
 
-ci: set up project harness — pyproject.toml (poetry v2), requirements.txt exports, Dockerfile (ubi9/python-312), cloudbuild.yaml, pre-commit (ruff/codespell/pyupgrade), editorconfig, GitHub workflows, and initial pytest suite
-
-
+chore: move app.py => src/app.py
+chore: fix linting, typing and other ruff errors in app.py
+refactor: change slack post to Block Kit messages
+chore: update pre-commit
