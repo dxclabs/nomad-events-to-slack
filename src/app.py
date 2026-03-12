@@ -84,8 +84,14 @@ def collect_window(index: int, window_seconds: int) -> tuple[list[dict[str, Any]
                         collected.extend(batch["Events"])
                     if batch.get("Index"):
                         new_index = int(batch["Index"])
-    except requests.exceptions.ReadTimeout:
-        pass  # window expired normally
+    except requests.exceptions.RequestException as e:
+        # ReadTimeout may be wrapped as ConnectionError in some urllib3 versions
+        is_timeout = (
+            isinstance(e, requests.exceptions.Timeout) or "timed out" in str(e).lower()
+        )
+        if not is_timeout:
+            raise
+        # window expired normally - return what we have
 
     return collected, new_index
 
