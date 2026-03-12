@@ -159,7 +159,9 @@ def format_event_to_slack_message(event: dict[str, Any]) -> str:
         },
     ]
 
-    return json.dumps({"text": header, "attachments": [{"color": color, "blocks": blocks}]})
+    return json.dumps(
+        {"text": header, "attachments": [{"color": color, "blocks": blocks}]}
+    )
 
 
 def post_message_to_slack(hook_url: str, message: str) -> bool:
