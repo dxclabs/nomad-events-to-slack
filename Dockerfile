@@ -40,7 +40,7 @@ RUN echo BRANCH_NAME=${BRANCH_NAME} >> .env && \
     echo SHORT_SHA=${SHORT_SHA} >> .env && \
     echo TAG_NAME=${TAG_NAME} >> .env
 
-COPY --chown=appuser:appgroup . .
+COPY --chown=appuser:appgroup src/ src/
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -50,4 +50,4 @@ STOPSIGNAL SIGINT
 
 USER appuser
 
-CMD ["python", "app.py"]
+CMD ["python", "src/app.py"]
