@@ -19,7 +19,8 @@ COPY requirements.txt .
 
 RUN microdnf install --setopt=keepcache=0 --nodocs --noplugins -y glibc-langpack-en.x86_64 && \
     microdnf install --setopt=keepcache=0 --nodocs --noplugins -y python312 && \
-    microdnf clean all
+    microdnf clean all && \
+    ln -s /usr/bin/python3.12 /usr/bin/python
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/
 RUN uv pip install --system -r requirements.txt
