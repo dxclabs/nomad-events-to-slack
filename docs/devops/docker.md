@@ -2,10 +2,10 @@
 
 * Build
 ```
-docker compose --file .\docker\docker-compose-.yml --project-directory . build
+docker build -t nomad-events-to-slack .
 ```
 
 Build with output:
 ```
-docker compose --file .\docker\docker-compose.yml --project-directory . build --progress=plain
+docker run -d --name nomad-events-to-slack --env-file .env nomad-events-to-slack
 ```

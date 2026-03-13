@@ -20,7 +20,7 @@ run locally
 poetry run python src/blah
 ```
 
-upgrading python version.  Remove old venv.  Use the new python version
+upgrading python version. Remove old venv. Select the new python version to use for env
 ```
 poetry env use "C:\Program Files\Python312\python.exe"
 ```

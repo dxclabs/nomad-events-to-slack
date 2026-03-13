@@ -1,13 +1,37 @@
 import json
-import os
+from datetime import UTC, datetime
 
 import pytest
 
-from app import clear_input_list, format_event_to_slack_message
+from app import (
+    _update_meta,
+    clear_input_list,
+    format_job_events_to_slack,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _default_meta(**overrides: int) -> dict:
+    base = {
+        "oom_kill_count": 0,
+        "restart_count": 0,
+        "download_attempts": 0,
+        "health_check_failures": 0,
+    }
+    base.update(overrides)
+    return base
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
-def sample_event():
+def task_event_started():
     return {
         "AllocationID": "4f5c9fe9-7087-e213-6830-fc8e924db354",
         "NodeName": "node1",
@@ -15,29 +39,34 @@ def sample_event():
         "JobType": "service",
         "TaskGroup": "my-group",
         "TaskName": "my-task",
-        "Time": "2024-01-01 12:00:00",
-        "EventType": "Terminated",
-        "EventMessage": "OOM Killed",
-        "EventDisplayMessage": "Task was OOM killed",
-        "EventDetails": {"exit_code": "137", "oom_killed": "true"},
+        "Time": datetime(2024, 1, 1, 12, 0, 15, tzinfo=UTC),
+        "EventType": "Started",
+        "EventMessage": "",
+        "EventDisplayMessage": "Task started successfully",
+        "EventDetails": {},
     }
 
 
 @pytest.fixture()
-def normal_event():
+def task_event_oom():
     return {
-        "AllocationID": "1a2b3c4d-0000-0000-0000-000000000000",
-        "NodeName": "node2",
+        "AllocationID": "aaaaaaaa-0000-0000-0000-000000000000",
+        "NodeName": "node1",
         "JobID": "my-job",
         "JobType": "service",
         "TaskGroup": "my-group",
         "TaskName": "my-task",
-        "Time": "2024-01-01 13:00:00",
-        "EventType": "Started",
-        "EventMessage": "",
-        "EventDisplayMessage": "Task started",
-        "EventDetails": {},
+        "Time": datetime(2024, 1, 1, 12, 1, 40, tzinfo=UTC),
+        "EventType": "Terminated",
+        "EventMessage": "OOM Killed",
+        "EventDisplayMessage": "Task killed: OOM",
+        "EventDetails": {"exit_code": "137", "oom_killed": "true"},
     }
+
+
+# ---------------------------------------------------------------------------
+# TestClearInputList
+# ---------------------------------------------------------------------------
 
 
 class TestClearInputList:
@@ -67,72 +96,132 @@ class TestClearInputList:
         assert lst == ["a", "b", "c"]
 
 
-class TestFormatEventToSlackMessage:
-    def _blocks(self, event):
-        result = json.loads(format_event_to_slack_message(event))
-        return result["attachments"][0]["blocks"]
+# ---------------------------------------------------------------------------
+# TestUpdateMeta
+# ---------------------------------------------------------------------------
 
-    def _attachment(self, event):
-        return json.loads(format_event_to_slack_message(event))["attachments"][0]
 
-    def test_returns_valid_json(self, sample_event):
-        result = json.loads(format_event_to_slack_message(sample_event))
+class TestUpdateMeta:
+    def test_oom_increments_oom_count(self):
+        meta = _default_meta()
+        _update_meta(meta, "Terminated", {"oom_killed": "true"})
+        assert meta["oom_kill_count"] == 1
+
+    def test_terminated_without_oom_does_not_increment(self):
+        meta = _default_meta()
+        _update_meta(meta, "Terminated", {"exit_code": "1"})
+        assert meta["oom_kill_count"] == 0
+
+    def test_restarting_increments_restart_count(self):
+        meta = _default_meta()
+        _update_meta(meta, "Restarting", {})
+        assert meta["restart_count"] == 1
+
+    def test_downloading_artifacts_increments_download_attempts(self):
+        meta = _default_meta()
+        _update_meta(meta, "Downloading Artifacts", {})
+        assert meta["download_attempts"] == 1
+
+    def test_untracked_event_type_changes_nothing(self):
+        meta = _default_meta()
+        _update_meta(meta, "Started", {})
+        assert meta == _default_meta()
+
+    def test_multiple_updates_accumulate(self):
+        meta = _default_meta()
+        _update_meta(meta, "Restarting", {})
+        _update_meta(meta, "Restarting", {})
+        _update_meta(meta, "Terminated", {"oom_killed": "true"})
+        assert meta["restart_count"] == 2
+        assert meta["oom_kill_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# TestFormatJobEventsToSlack
+# ---------------------------------------------------------------------------
+
+
+class TestFormatJobEventsToSlack:
+    def _parsed(self, job_id, events, meta=None, **kwargs):
+        m = meta or _default_meta()
+        return json.loads(format_job_events_to_slack(job_id, events, m, **kwargs))
+
+    def _attachment(self, job_id, events, meta=None, **kwargs):
+        return self._parsed(job_id, events, meta, **kwargs)["attachments"][0]
+
+    def _blocks(self, job_id, events, meta=None, **kwargs):
+        return self._attachment(job_id, events, meta, **kwargs)["blocks"]
+
+    def test_returns_valid_json(self, task_event_started):
+        result = self._parsed("my-job", [task_event_started])
         assert "attachments" in result
+        assert "text" in result
 
-    def test_attachment_has_color_and_blocks(self, sample_event):
-        attachment = self._attachment(sample_event)
-        assert "color" in attachment
-        assert "blocks" in attachment
+    def test_notification_text_matches_header(self, task_event_started):
+        result = self._parsed("my-job", [task_event_started])
+        header_text = self._blocks("my-job", [task_event_started])[0]["text"]["text"]
+        assert result["text"] == header_text
 
-    def test_oom_kill_uses_red_color(self, sample_event):
-        assert self._attachment(sample_event)["color"] == "#d72b3f"
+    def test_header_contains_job_id_and_count(self, task_event_started):
+        header = self._blocks("my-job", [task_event_started])[0]["text"]["text"]
+        assert "my-job" in header
+        assert "1 event" in header
 
-    def test_oom_kill_header(self, sample_event):
-        header = self._blocks(sample_event)[0]
-        assert header["type"] == "header"
-        assert "💀 OOM Kill" in header["text"]["text"]
-        assert "my-task" in header["text"]["text"]
-        assert "my-job" in header["text"]["text"]
+    def test_plural_events(self, task_event_started, task_event_oom):
+        events = [task_event_started, task_event_oom]
+        header = self._blocks("my-job", events)[0]["text"]["text"]
+        assert "2 events" in header
 
-    def test_normal_event_header(self, normal_event):
-        header = self._blocks(normal_event)[0]
-        assert "Started" in header["text"]["text"]
-        assert "💀" not in header["text"]["text"]
+    def test_oom_color_from_meta(self, task_event_oom):
+        meta = _default_meta(oom_kill_count=1)
+        assert self._attachment("my-job", [task_event_oom], meta)["color"] == "#d72b3f"
 
-    def test_default_color_for_normal_event(self, normal_event, monkeypatch):
+    def test_oom_header_prefix_from_meta(self, task_event_oom):
+        meta = _default_meta(oom_kill_count=1)
+        header = self._blocks("my-job", [task_event_oom], meta)[0]["text"]["text"]
+        assert "💀" in header
+
+    def test_normal_event_default_color(self, task_event_started, monkeypatch):
         monkeypatch.delenv("EVENTS_COLOR", raising=False)
-        assert self._attachment(normal_event)["color"] == "#36a64f"
+        assert self._attachment("my-job", [task_event_started])["color"] == "#36a64f"
 
-    def test_custom_color_for_normal_event(self, normal_event, monkeypatch):
-        monkeypatch.setenv("EVENTS_COLOR", "#ff0000")
-        assert self._attachment(normal_event)["color"] == "#ff0000"
+    def test_custom_color(self, task_event_started, monkeypatch):
+        monkeypatch.setenv("EVENTS_COLOR", "#ff9500")
+        assert self._attachment("my-job", [task_event_started])["color"] == "#ff9500"
 
-    def test_event_type_and_message_in_blocks(self, sample_event):
-        fields_block = self._blocks(sample_event)[1]
-        text = " ".join(f["text"] for f in fields_block["fields"])
-        assert "Terminated" in text
-        assert "Task was OOM killed" in text
+    def test_event_body_contains_task_and_type(self, task_event_started):
+        section = self._blocks("my-job", [task_event_started])[1]["text"]["text"]
+        assert "my-task" in section
+        assert "Started" in section
 
-    def test_job_and_node_in_blocks(self, sample_event):
-        fields_block = self._blocks(sample_event)[2]
-        text = " ".join(f["text"] for f in fields_block["fields"])
-        assert "my-job" in text
-        assert "node1" in text
-        assert "my-group" in text
-        assert "service" in text
-
-    def test_context_has_time_and_allocation(self, sample_event):
-        context = self._blocks(sample_event)[3]
+    def test_context_contains_node_and_time(self, task_event_started):
+        context = self._blocks("my-job", [task_event_started])[-1]
         text = " ".join(e["text"] for e in context["elements"])
-        assert "4f5c9fe9" in text
-        assert "2024-01-01 12:00:00" in text
+        assert "node1" in text
+        assert "2024-01-01" in text
 
-    def test_event_details_in_context(self, sample_event):
-        context = self._blocks(sample_event)[3]
-        details_text = context["elements"][0]["text"]
-        assert "exit_code" in details_text
-        assert "137" in details_text
+    def test_oom_wins_color_in_mixed_batch(self, task_event_started, task_event_oom):
+        meta = _default_meta(oom_kill_count=1)
+        events = [task_event_started, task_event_oom]
+        assert self._attachment("my-job", events, meta)["color"] == "#d72b3f"
 
-    def test_empty_details_shows_none(self, normal_event):
-        context = self._blocks(normal_event)[3]
-        assert "_none_" in context["elements"][0]["text"]
+    def test_partial_flag_adds_hourglass_prefix(self, task_event_started):
+        header = self._blocks("my-job", [task_event_started])[0]["text"]["text"]
+        assert "⏳" not in header
+        partial_header = self._blocks("my-job", [task_event_started], partial=True)[0][
+            "text"
+        ]["text"]
+        assert "⏳" in partial_header
+
+    def test_meta_counts_appear_in_context(self, task_event_started):
+        meta = _default_meta(restart_count=3, download_attempts=2)
+        context = self._blocks("my-job", [task_event_started], meta)[-1]
+        text = " ".join(e["text"] for e in context["elements"])
+        assert "restarts: 3" in text
+        assert "dl attempts: 2" in text
+
+    def test_zero_meta_counts_not_shown(self, task_event_started):
+        context = self._blocks("my-job", [task_event_started])[-1]
+        text = " ".join(e["text"] for e in context["elements"])
+        assert "restarts" not in text
+        assert "OOM kills" not in text
