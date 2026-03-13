@@ -81,6 +81,8 @@ def _empty_job_record() -> dict[str, Any]:
         "events": [],
         "seen_keys": set(),
         "last_reported_at": now,
+        "last_reported_index": 0,  # highest event_index included in last report
+        "max_index": 0,  # highest event_index seen in current accumulation
         "last_state": None,
         "last_updated_at": now,
         "start_index": None,
@@ -206,9 +208,11 @@ def _report_and_purge(
         logger.exception("Failed to post Slack message for %s: %s", job_id, e)
 
     now = datetime.now(UTC)
+    job["last_reported_index"] = job["max_index"]
     job["events"] = []
     job["seen_keys"] = set()
     job["last_reported_at"] = now
+    job["max_index"] = 0
     job["last_state"] = None
     job["start_index"] = None
     job["meta"] = {
@@ -313,6 +317,15 @@ def main() -> None:  # noqa: C901
                     if not job_id:
                         continue
 
+                    # Skip events at or below the index already covered by the
+                    # last report for this job — guards against Nomad re-emitting
+                    # stale allocation state updates after a terminal event.
+                    if (
+                        job_id in job_events
+                        and event_index <= job_events[job_id]["last_reported_index"]
+                    ):
+                        continue
+
                     # Optional filters
                     if node_names and alloc.get("NodeName") not in node_names:
                         continue
@@ -367,6 +380,7 @@ def main() -> None:  # noqa: C901
                             rec["last_state"] = event_type
                             rec["last_updated_at"] = event_time
                             rec["start_index"] = event_index
+                            rec["max_index"] = event_index
                             job_events[job_id] = rec
                             _update_meta(
                                 rec["meta"], event_type, latest.get("Details", {})
@@ -381,6 +395,8 @@ def main() -> None:  # noqa: C901
                             job["last_state"] = event_type
                             if event_time > job["last_updated_at"]:
                                 job["last_updated_at"] = event_time
+                            if event_index > job["max_index"]:
+                                job["max_index"] = event_index
                             _update_meta(
                                 job["meta"], event_type, latest.get("Details", {})
                             )
