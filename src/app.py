@@ -20,7 +20,15 @@ COLOR_DEFAULT = "#36a64f"
 CONNECT_TIMEOUT = 10
 QUEUE_POLL_SECS = 2.0
 
-TERMINAL_EVENT_TYPES = frozenset({"Terminated", "Killed", "Not Restarting"})
+# "Started" signals a restart cycle is complete; "Killed"/"Not Restarting" are
+# unconditionally terminal.  "Terminated" is handled separately with a debounce
+# so that a Terminated→Restarting→Started cycle isn't reported mid-flight.
+TERMINAL_EVENT_TYPES = frozenset({"Started", "Killed", "Not Restarting"})
+
+# How long to wait after a "Terminated" event before treating it as terminal.
+# This gives Nomad time to emit the follow-up "Restarting" event for jobs that
+# are restarted by a template change or scheduler decision.
+TERMINATED_DEBOUNCE_SECS = 30
 
 
 def clear_input_list(in_list: list[str]) -> None:
@@ -407,8 +415,12 @@ def main() -> None:  # noqa: C901
                 job = job_events[job_id]
                 if not job["events"]:
                     continue
-                is_terminal = job["last_state"] in TERMINAL_EVENT_TYPES
                 age_secs = (now - job["last_updated_at"]).total_seconds()
+                is_terminal = job["last_state"] in TERMINAL_EVENT_TYPES
+                # Debounce "Terminated": wait to see if "Restarting" follows
+                # before treating it as terminal (e.g. template-change restart).
+                if not is_terminal and job["last_state"] == "Terminated":
+                    is_terminal = age_secs >= TERMINATED_DEBOUNCE_SECS
                 is_stale = age_secs > max_job_age_secs
                 if is_terminal or is_stale:
                     _report_and_purge(
