@@ -435,9 +435,17 @@ def main() -> None:  # noqa: C901
                             save_index(my_consul, consul_key, stored_index)
                         except consul.base.ConsulException as e:
                             logger.exception("Failed to save index to Consul: %s", e)
+    except KeyboardInterrupt:
+        logger.info("Shutting down.")
     finally:
         stream_exit.set()
         stream_thread.join(timeout=5)
+        if use_consul == "true" and my_consul and stored_index:
+            try:
+                save_index(my_consul, consul_key, stored_index)
+                logger.info("Saved index %s to Consul on exit", stored_index)
+            except consul.base.ConsulException as e:
+                logger.exception("Failed to save index to Consul on exit: %s", e)
 
 
 if __name__ == "__main__":
