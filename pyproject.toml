@@ -7,6 +7,7 @@ requires-python = ">=3.12,<3.14"
 
 dependencies = [
     "python-consul2>=0.1.5,<0.2.0",
+    "python-nomad>=2.0.0,<3.0.0",
     "requests>=2.32.0,<3.0.0",
 ]
 
@@ -31,7 +32,7 @@ ignore = ["ISC001"]
 unfixable = ["B"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["ARG001", "ARG002", "ANN001", "ANN201", "ANN202", "F841", "S101", "S106", "SLF001", "SIM117"]
+"tests/**" = ["ARG001", "ARG002", "ANN001", "ANN003", "ANN201", "ANN202", "F841", "S101", "S106", "SLF001", "SIM117"]
 
 [tool.ty.environment]
 root = ["."]

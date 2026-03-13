@@ -1,86 +1,33 @@
 import json
+from datetime import UTC, datetime
 
 import pytest
 
 from app import (
+    _update_meta,
     clear_input_list,
-    extract_task_events,
     format_job_events_to_slack,
-    group_events_by_job,
 )
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _default_meta(**overrides: int) -> dict:
+    base = {
+        "oom_kill_count": 0,
+        "restart_count": 0,
+        "download_attempts": 0,
+        "health_check_failures": 0,
+    }
+    base.update(overrides)
+    return base
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture()
-def stream_event_started():
-    return {
-        "Topic": "Allocation",
-        "Type": "AllocationUpdated",
-        "Index": 1234,
-        "Payload": {
-            "Allocation": {
-                "ID": "4f5c9fe9-7087-e213-6830-fc8e924db354",
-                "JobID": "my-job",
-                "JobType": "service",
-                "NodeName": "node1",
-                "TaskGroup": "my-group",
-                "TaskStates": {
-                    "my-task": {
-                        "Events": [
-                            {
-                                "Type": "Received",
-                                "Time": 1704067200000000000,
-                                "Message": "",
-                                "DisplayMessage": "Task received",
-                                "Details": {},
-                            },
-                            {
-                                "Type": "Started",
-                                "Time": 1704067215000000000,
-                                "Message": "",
-                                "DisplayMessage": "Task started successfully",
-                                "Details": {},
-                            },
-                        ],
-                    },
-                },
-            },
-        },
-    }
-
-
-@pytest.fixture()
-def stream_event_oom():
-    return {
-        "Topic": "Allocation",
-        "Type": "AllocationUpdated",
-        "Index": 1235,
-        "Payload": {
-            "Allocation": {
-                "ID": "aaaaaaaa-0000-0000-0000-000000000000",
-                "JobID": "my-job",
-                "JobType": "service",
-                "NodeName": "node1",
-                "TaskGroup": "my-group",
-                "TaskStates": {
-                    "my-task": {
-                        "Events": [
-                            {
-                                "Type": "Terminated",
-                                "Time": 1704067300000000000,
-                                "Message": "OOM Killed",
-                                "DisplayMessage": "Task killed: OOM",
-                                "Details": {"exit_code": "137", "oom_killed": "true"},
-                            },
-                        ],
-                    },
-                },
-            },
-        },
-    }
 
 
 @pytest.fixture()
@@ -92,7 +39,7 @@ def task_event_started():
         "JobType": "service",
         "TaskGroup": "my-group",
         "TaskName": "my-task",
-        "Time": "2024-01-01 12:00:15",
+        "Time": datetime(2024, 1, 1, 12, 0, 15, tzinfo=UTC),
         "EventType": "Started",
         "EventMessage": "",
         "EventDisplayMessage": "Task started successfully",
@@ -109,7 +56,7 @@ def task_event_oom():
         "JobType": "service",
         "TaskGroup": "my-group",
         "TaskName": "my-task",
-        "Time": "2024-01-01 12:01:40",
+        "Time": datetime(2024, 1, 1, 12, 1, 40, tzinfo=UTC),
         "EventType": "Terminated",
         "EventMessage": "OOM Killed",
         "EventDisplayMessage": "Task killed: OOM",
@@ -150,90 +97,43 @@ class TestClearInputList:
 
 
 # ---------------------------------------------------------------------------
-# TestExtractTaskEvents
+# TestUpdateMeta
 # ---------------------------------------------------------------------------
 
 
-class TestExtractTaskEvents:
-    def test_extracts_latest_event_only(self, stream_event_started):
-        events = extract_task_events([stream_event_started], [], [], [], [])
-        assert len(events) == 1
-        assert events[0]["EventType"] == "Started"  # latest, not Received
+class TestUpdateMeta:
+    def test_oom_increments_oom_count(self):
+        meta = _default_meta()
+        _update_meta(meta, "Terminated", {"oom_killed": "true"})
+        assert meta["oom_kill_count"] == 1
 
-    def test_fields_mapped_correctly(self, stream_event_started):
-        e = extract_task_events([stream_event_started], [], [], [], [])[0]
-        assert e["JobID"] == "my-job"
-        assert e["NodeName"] == "node1"
-        assert e["TaskName"] == "my-task"
-        assert e["TaskGroup"] == "my-group"
-        assert e["AllocationID"] == "4f5c9fe9-7087-e213-6830-fc8e924db354"
+    def test_terminated_without_oom_does_not_increment(self):
+        meta = _default_meta()
+        _update_meta(meta, "Terminated", {"exit_code": "1"})
+        assert meta["oom_kill_count"] == 0
 
-    def test_filters_by_node_name(self, stream_event_started):
-        assert (
-            extract_task_events([stream_event_started], ["other-node"], [], [], [])
-            == []
-        )
+    def test_restarting_increments_restart_count(self):
+        meta = _default_meta()
+        _update_meta(meta, "Restarting", {})
+        assert meta["restart_count"] == 1
 
-    def test_node_name_match_passes(self, stream_event_started):
-        assert (
-            len(extract_task_events([stream_event_started], ["node1"], [], [], [])) == 1
-        )
+    def test_downloading_artifacts_increments_download_attempts(self):
+        meta = _default_meta()
+        _update_meta(meta, "Downloading Artifacts", {})
+        assert meta["download_attempts"] == 1
 
-    def test_filters_by_job_id(self, stream_event_started):
-        assert (
-            extract_task_events([stream_event_started], [], ["other-job"], [], []) == []
-        )
+    def test_untracked_event_type_changes_nothing(self):
+        meta = _default_meta()
+        _update_meta(meta, "Started", {})
+        assert meta == _default_meta()
 
-    def test_job_id_match_passes(self, stream_event_started):
-        assert (
-            len(extract_task_events([stream_event_started], [], ["my-job"], [], []))
-            == 1
-        )
-
-    def test_filters_by_event_type(self, stream_event_started):
-        assert (
-            extract_task_events([stream_event_started], [], [], ["Terminated"], [])
-            == []
-        )
-
-    def test_skips_missing_payload(self):
-        assert extract_task_events([{"Topic": "Allocation"}], [], [], [], []) == []
-
-    def test_skips_empty_task_states(self):
-        event = {
-            "Payload": {
-                "Allocation": {
-                    "ID": "x",
-                    "JobID": "j",
-                    "JobType": "s",
-                    "NodeName": "n",
-                    "TaskGroup": "g",
-                    "TaskStates": {},
-                }
-            }
-        }
-        assert extract_task_events([event], [], [], [], []) == []
-
-
-# ---------------------------------------------------------------------------
-# TestGroupEventsByJob
-# ---------------------------------------------------------------------------
-
-
-class TestGroupEventsByJob:
-    def test_groups_by_job_id(self, task_event_started, task_event_oom):
-        other = {**task_event_started, "JobID": "other-job"}
-        groups = group_events_by_job([task_event_started, task_event_oom, other])
-        assert set(groups.keys()) == {"my-job", "other-job"}
-        assert len(groups["my-job"]) == 2
-        assert len(groups["other-job"]) == 1
-
-    def test_empty_events(self):
-        assert group_events_by_job([]) == {}
-
-    def test_single_job(self, task_event_started):
-        groups = group_events_by_job([task_event_started])
-        assert list(groups.keys()) == ["my-job"]
+    def test_multiple_updates_accumulate(self):
+        meta = _default_meta()
+        _update_meta(meta, "Restarting", {})
+        _update_meta(meta, "Restarting", {})
+        _update_meta(meta, "Terminated", {"oom_killed": "true"})
+        assert meta["restart_count"] == 2
+        assert meta["oom_kill_count"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -242,14 +142,15 @@ class TestGroupEventsByJob:
 
 
 class TestFormatJobEventsToSlack:
-    def _parsed(self, job_id, events):
-        return json.loads(format_job_events_to_slack(job_id, events))
+    def _parsed(self, job_id, events, meta=None, **kwargs):
+        m = meta or _default_meta()
+        return json.loads(format_job_events_to_slack(job_id, events, m, **kwargs))
 
-    def _attachment(self, job_id, events):
-        return self._parsed(job_id, events)["attachments"][0]
+    def _attachment(self, job_id, events, meta=None, **kwargs):
+        return self._parsed(job_id, events, meta, **kwargs)["attachments"][0]
 
-    def _blocks(self, job_id, events):
-        return self._attachment(job_id, events)["blocks"]
+    def _blocks(self, job_id, events, meta=None, **kwargs):
+        return self._attachment(job_id, events, meta, **kwargs)["blocks"]
 
     def test_returns_valid_json(self, task_event_started):
         result = self._parsed("my-job", [task_event_started])
@@ -258,10 +159,8 @@ class TestFormatJobEventsToSlack:
 
     def test_notification_text_matches_header(self, task_event_started):
         result = self._parsed("my-job", [task_event_started])
-        assert (
-            result["text"]
-            == self._blocks("my-job", [task_event_started])[0]["text"]["text"]
-        )
+        header_text = self._blocks("my-job", [task_event_started])[0]["text"]["text"]
+        assert result["text"] == header_text
 
     def test_header_contains_job_id_and_count(self, task_event_started):
         header = self._blocks("my-job", [task_event_started])[0]["text"]["text"]
@@ -269,16 +168,17 @@ class TestFormatJobEventsToSlack:
         assert "1 event" in header
 
     def test_plural_events(self, task_event_started, task_event_oom):
-        header = self._blocks("my-job", [task_event_started, task_event_oom])[0][
-            "text"
-        ]["text"]
+        events = [task_event_started, task_event_oom]
+        header = self._blocks("my-job", events)[0]["text"]["text"]
         assert "2 events" in header
 
-    def test_oom_color(self, task_event_oom):
-        assert self._attachment("my-job", [task_event_oom])["color"] == "#d72b3f"
+    def test_oom_color_from_meta(self, task_event_oom):
+        meta = _default_meta(oom_kill_count=1)
+        assert self._attachment("my-job", [task_event_oom], meta)["color"] == "#d72b3f"
 
-    def test_oom_header_prefix(self, task_event_oom):
-        header = self._blocks("my-job", [task_event_oom])[0]["text"]["text"]
+    def test_oom_header_prefix_from_meta(self, task_event_oom):
+        meta = _default_meta(oom_kill_count=1)
+        header = self._blocks("my-job", [task_event_oom], meta)[0]["text"]["text"]
         assert "💀" in header
 
     def test_normal_event_default_color(self, task_event_started, monkeypatch):
@@ -300,8 +200,28 @@ class TestFormatJobEventsToSlack:
         assert "node1" in text
         assert "2024-01-01" in text
 
-    def test_mixed_batch_oom_wins_color(self, task_event_started, task_event_oom):
-        assert (
-            self._attachment("my-job", [task_event_started, task_event_oom])["color"]
-            == "#d72b3f"
-        )
+    def test_oom_wins_color_in_mixed_batch(self, task_event_started, task_event_oom):
+        meta = _default_meta(oom_kill_count=1)
+        events = [task_event_started, task_event_oom]
+        assert self._attachment("my-job", events, meta)["color"] == "#d72b3f"
+
+    def test_partial_flag_adds_hourglass_prefix(self, task_event_started):
+        header = self._blocks("my-job", [task_event_started])[0]["text"]["text"]
+        assert "⏳" not in header
+        partial_header = self._blocks("my-job", [task_event_started], partial=True)[0][
+            "text"
+        ]["text"]
+        assert "⏳" in partial_header
+
+    def test_meta_counts_appear_in_context(self, task_event_started):
+        meta = _default_meta(restart_count=3, download_attempts=2)
+        context = self._blocks("my-job", [task_event_started], meta)[-1]
+        text = " ".join(e["text"] for e in context["elements"])
+        assert "restarts: 3" in text
+        assert "dl attempts: 2" in text
+
+    def test_zero_meta_counts_not_shown(self, task_event_started):
+        context = self._blocks("my-job", [task_event_started])[-1]
+        text = " ".join(e["text"] for e in context["elements"])
+        assert "restarts" not in text
+        assert "OOM kills" not in text
