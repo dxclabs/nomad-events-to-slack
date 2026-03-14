@@ -91,9 +91,14 @@ def _empty_job_record() -> dict[str, Any]:
         "last_reported_at": now,
         "last_reported_index": 0,  # highest event_index included in last report
         "max_index": 0,  # highest event_index seen in current accumulation
+        "job_type": None,  # "service", "batch", "system", "sysbatch"
         "last_state": None,
         "last_updated_at": now,
         "start_index": None,
+        # None = waiting for health check, True = healthy, False = unhealthy
+        "deployment_healthy": None,
+        # task_name → TaskStates[task].State ("pending", "running", "dead")
+        "task_states": {},
         "meta": {
             "oom_kill_count": 0,
             "restart_count": 0,
@@ -340,11 +345,18 @@ def main() -> None:  # noqa: C901
                     if job_ids and job_id not in job_ids:
                         continue
 
+                    job_type = alloc.get("JobType", "")
+                    # None = waiting, True = healthy, False = unhealthy
+                    deployment_healthy = (alloc.get("DeploymentStatus") or {}).get(
+                        "Healthy"
+                    )
+
                     for task_name, state in (alloc.get("TaskStates") or {}).items():
                         task_event_list = state.get("Events") or []
                         if not task_event_list:
                             continue
 
+                        task_state = state.get("State", "")
                         latest = task_event_list[-1]
                         event_type = latest["Type"]
 
@@ -385,28 +397,50 @@ def main() -> None:  # noqa: C901
                             rec = _empty_job_record()
                             rec["events"] = [task_event]
                             rec["seen_keys"] = {dedup_key}
+                            rec["job_type"] = job_type
                             rec["last_state"] = event_type
                             rec["last_updated_at"] = event_time
                             rec["start_index"] = event_index
                             rec["max_index"] = event_index
+                            rec["deployment_healthy"] = deployment_healthy
+                            rec["task_states"] = {task_name: task_state}
                             job_events[job_id] = rec
                             _update_meta(
                                 rec["meta"], event_type, latest.get("Details", {})
                             )
                             logger.debug(
-                                "New job tracked: %s at index %s", job_id, event_index
+                                "New job tracked: %s (%s) index=%s"
+                                " | state=%s deployment_healthy=%s task_states=%s",
+                                job_id,
+                                job_type,
+                                event_index,
+                                event_type,
+                                deployment_healthy,
+                                rec["task_states"],
                             )
                         elif dedup_key not in job_events[job_id]["seen_keys"]:
                             job = job_events[job_id]
                             job["events"].append(task_event)
                             job["seen_keys"].add(dedup_key)
                             job["last_state"] = event_type
+                            job["deployment_healthy"] = deployment_healthy
+                            job["task_states"][task_name] = task_state
                             if event_time > job["last_updated_at"]:
                                 job["last_updated_at"] = event_time
                             if event_index > job["max_index"]:
                                 job["max_index"] = event_index
                             _update_meta(
                                 job["meta"], event_type, latest.get("Details", {})
+                            )
+                            logger.debug(
+                                "%s (%s) index=%s"
+                                " | state=%s deployment_healthy=%s task_states=%s",
+                                job_id,
+                                job["job_type"],
+                                event_index,
+                                event_type,
+                                deployment_healthy,
+                                job["task_states"],
                             )
 
             # Report any job that has reached a terminal state or gone stale
