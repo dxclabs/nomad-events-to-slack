@@ -452,6 +452,9 @@ def main() -> None:  # noqa: C901
                             job["events"].append(task_event)
                             job["seen_keys"].add(dedup_key)
                             job["last_state"] = event_type
+                            # Update job_type if it wasn't populated on first event
+                            if job_type and not job["job_type"]:
+                                job["job_type"] = job_type
                             job["deployment_healthy"] = deployment_healthy
                             job["task_states"][task_name] = task_state
                             if event_time > job["last_updated_at"]:
@@ -483,6 +486,16 @@ def main() -> None:  # noqa: C901
                     job["job_type"] or "", _DEFAULT_TERMINAL_EVENT_TYPES
                 )
                 is_terminal = job["last_state"] in terminal_types
+                # For service/system jobs "Started" is only terminal once the
+                # health check has resolved. When deployment_healthy is None
+                # (still awaiting checks), keep accumulating so the healthy/
+                # unhealthy event can be grouped into the same message.
+                if (
+                    is_terminal
+                    and job["last_state"] == "Started"
+                    and job["deployment_healthy"] is None
+                ):
+                    is_terminal = False
                 # Debounce "Terminated" for service/system jobs: wait to see if
                 # "Restarting" follows before reporting (template-change restart).
                 # batch/sysbatch already have "Terminated" in their terminal set
