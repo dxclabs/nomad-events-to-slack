@@ -20,14 +20,25 @@ COLOR_DEFAULT = "#36a64f"
 CONNECT_TIMEOUT = 10
 QUEUE_POLL_SECS = 2.0
 
-# "Started" signals a restart cycle is complete; "Killed"/"Not Restarting" are
-# unconditionally terminal.  "Terminated" is handled separately with a debounce
-# so that a Terminated→Restarting→Started cycle isn't reported mid-flight.
-TERMINAL_EVENT_TYPES = frozenset({"Started", "Killed", "Not Restarting"})
+# Terminal event types keyed by Nomad job type.
+# service/system: "Started" ends a restart cycle; "Terminated" is debounced so
+#   a Terminated→Restarting→Started sequence isn't reported mid-flight.
+# batch/sysbatch: "Terminated" is the expected end state; "Started" is
+#   mid-sequence (Received→Task Setup→Started→Terminated) and must not trigger.
+TERMINAL_EVENT_TYPES: dict[str, frozenset[str]] = {
+    "service": frozenset({"Started", "Killed", "Not Restarting"}),
+    "system": frozenset({"Started", "Killed", "Not Restarting"}),
+    "batch": frozenset({"Terminated", "Killed", "Not Restarting"}),
+    "sysbatch": frozenset({"Terminated", "Killed", "Not Restarting"}),
+}
+# Fallback for unknown/unset job type — conservative superset.
+_DEFAULT_TERMINAL_EVENT_TYPES = frozenset(
+    {"Started", "Terminated", "Killed", "Not Restarting"}
+)
 
-# How long to wait after a "Terminated" event before treating it as terminal.
-# This gives Nomad time to emit the follow-up "Restarting" event for jobs that
-# are restarted by a template change or scheduler decision.
+# How long to wait after a "Terminated" event before treating it as terminal
+# for service/system jobs. Gives Nomad time to emit the follow-up "Restarting"
+# event for template-change restarts.
 TERMINATED_DEBOUNCE_SECS = 30
 
 
@@ -91,9 +102,14 @@ def _empty_job_record() -> dict[str, Any]:
         "last_reported_at": now,
         "last_reported_index": 0,  # highest event_index included in last report
         "max_index": 0,  # highest event_index seen in current accumulation
+        "job_type": None,  # "service", "batch", "system", "sysbatch"
         "last_state": None,
         "last_updated_at": now,
         "start_index": None,
+        # None = waiting for health check, True = healthy, False = unhealthy
+        "deployment_healthy": None,
+        # task_name → TaskStates[task].State ("pending", "running", "dead")
+        "task_states": {},
         "meta": {
             "oom_kill_count": 0,
             "restart_count": 0,
@@ -132,10 +148,21 @@ def format_job_events_to_slack(
         prefix += "⏳ "
     header = f"{prefix}{job_id} — {n} event{'s' if n != 1 else ''}"
 
+    _health_label = {
+        True: " ✅ healthy",
+        False: " ❌ unhealthy",
+        None: " ⏳ awaiting health check",
+    }
+
     event_lines = []
     for e in events:
         oom_flag = " 💀" if e["EventDetails"].get("oom_killed") == "true" else ""
-        line = f"• *{e['TaskName']}* — {e['EventType']}{oom_flag}"
+        health_flag = (
+            _health_label[e["DeploymentHealthy"]]
+            if e["EventType"] == "Started" and e["DeploymentHealthy"] is not None
+            else ""
+        )
+        line = f"• *{e['TaskName']}* — {e['EventType']}{oom_flag}{health_flag}"
         if e["EventDisplayMessage"]:
             line += f"\n  _{e['EventDisplayMessage']}_"
         event_lines.append(line)
@@ -340,11 +367,18 @@ def main() -> None:  # noqa: C901
                     if job_ids and job_id not in job_ids:
                         continue
 
+                    job_type = alloc.get("JobType", "")
+                    # None = waiting, True = healthy, False = unhealthy
+                    deployment_healthy = (alloc.get("DeploymentStatus") or {}).get(
+                        "Healthy"
+                    )
+
                     for task_name, state in (alloc.get("TaskStates") or {}).items():
                         task_event_list = state.get("Events") or []
                         if not task_event_list:
                             continue
 
+                        task_state = state.get("State", "")
                         latest = task_event_list[-1]
                         event_type = latest["Type"]
 
@@ -366,7 +400,13 @@ def main() -> None:  # noqa: C901
                         ).total_seconds() > max_job_age_secs:
                             continue
 
-                        dedup_key = (alloc["ID"], task_name, event_type, latest["Time"])
+                        dedup_key = (
+                            alloc["ID"],
+                            task_name,
+                            event_type,
+                            latest["Time"],
+                            deployment_healthy,
+                        )
                         task_event = {
                             "AllocationID": alloc["ID"],
                             "NodeName": alloc.get("NodeName", ""),
@@ -379,34 +419,60 @@ def main() -> None:  # noqa: C901
                             "EventMessage": latest.get("Message", ""),
                             "EventDisplayMessage": latest.get("DisplayMessage", ""),
                             "EventDetails": latest.get("Details", {}),
+                            "DeploymentHealthy": deployment_healthy,
                         }
 
                         if job_id not in job_events:
                             rec = _empty_job_record()
                             rec["events"] = [task_event]
                             rec["seen_keys"] = {dedup_key}
+                            rec["job_type"] = job_type
                             rec["last_state"] = event_type
                             rec["last_updated_at"] = event_time
                             rec["start_index"] = event_index
                             rec["max_index"] = event_index
+                            rec["deployment_healthy"] = deployment_healthy
+                            rec["task_states"] = {task_name: task_state}
                             job_events[job_id] = rec
                             _update_meta(
                                 rec["meta"], event_type, latest.get("Details", {})
                             )
                             logger.debug(
-                                "New job tracked: %s at index %s", job_id, event_index
+                                "New job tracked: %s (%s) index=%s"
+                                " | state=%s deployment_healthy=%s task_states=%s",
+                                job_id,
+                                job_type,
+                                event_index,
+                                event_type,
+                                deployment_healthy,
+                                rec["task_states"],
                             )
                         elif dedup_key not in job_events[job_id]["seen_keys"]:
                             job = job_events[job_id]
                             job["events"].append(task_event)
                             job["seen_keys"].add(dedup_key)
                             job["last_state"] = event_type
+                            # Update job_type if it wasn't populated on first event
+                            if job_type and not job["job_type"]:
+                                job["job_type"] = job_type
+                            job["deployment_healthy"] = deployment_healthy
+                            job["task_states"][task_name] = task_state
                             if event_time > job["last_updated_at"]:
                                 job["last_updated_at"] = event_time
                             if event_index > job["max_index"]:
                                 job["max_index"] = event_index
                             _update_meta(
                                 job["meta"], event_type, latest.get("Details", {})
+                            )
+                            logger.debug(
+                                "%s (%s) index=%s"
+                                " | state=%s deployment_healthy=%s task_states=%s",
+                                job_id,
+                                job["job_type"],
+                                event_index,
+                                event_type,
+                                deployment_healthy,
+                                job["task_states"],
                             )
 
             # Report any job that has reached a terminal state or gone stale
@@ -416,11 +482,31 @@ def main() -> None:  # noqa: C901
                 if not job["events"]:
                     continue
                 age_secs = (now - job["last_updated_at"]).total_seconds()
-                is_terminal = job["last_state"] in TERMINAL_EVENT_TYPES
-                # Debounce "Terminated": wait to see if "Restarting" follows
-                # before treating it as terminal (e.g. template-change restart).
+                terminal_types = TERMINAL_EVENT_TYPES.get(
+                    job["job_type"] or "", _DEFAULT_TERMINAL_EVENT_TYPES
+                )
+                is_terminal = job["last_state"] in terminal_types
+                # For service/system jobs "Started" is only terminal once the
+                # health check has resolved. When deployment_healthy is None
+                # (still awaiting checks), keep accumulating so the healthy/
+                # unhealthy event can be grouped into the same message.
+                if (
+                    is_terminal
+                    and job["last_state"] == "Started"
+                    and job["deployment_healthy"] is None
+                ):
+                    is_terminal = False
+                # Debounce "Terminated" for service/system jobs: wait to see if
+                # "Restarting" follows before reporting (template-change restart).
+                # batch/sysbatch already have "Terminated" in their terminal set
+                # so this branch is never reached for them.
                 if not is_terminal and job["last_state"] == "Terminated":
                     is_terminal = age_secs >= TERMINATED_DEBOUNCE_SECS
+                # deployment_healthy=False means Nomad has marked the allocation
+                # unhealthy and will take no further action — report immediately.
+                # Use `is False` explicitly: None means still waiting for checks.
+                if not is_terminal and job["deployment_healthy"] is False:
+                    is_terminal = True
                 is_stale = age_secs > max_job_age_secs
                 if is_terminal or is_stale:
                     _report_and_purge(

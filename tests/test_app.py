@@ -44,6 +44,7 @@ def task_event_started():
         "EventMessage": "",
         "EventDisplayMessage": "Task started successfully",
         "EventDetails": {},
+        "DeploymentHealthy": True,
     }
 
 
@@ -61,6 +62,7 @@ def task_event_oom():
         "EventMessage": "OOM Killed",
         "EventDisplayMessage": "Task killed: OOM",
         "EventDetails": {"exit_code": "137", "oom_killed": "true"},
+        "DeploymentHealthy": None,
     }
 
 
