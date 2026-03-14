@@ -137,10 +137,21 @@ def format_job_events_to_slack(
         prefix += "⏳ "
     header = f"{prefix}{job_id} — {n} event{'s' if n != 1 else ''}"
 
+    _health_label = {
+        True: " ✅ healthy",
+        False: " ❌ unhealthy",
+        None: " ⏳ awaiting health check",
+    }
+
     event_lines = []
     for e in events:
         oom_flag = " 💀" if e["EventDetails"].get("oom_killed") == "true" else ""
-        line = f"• *{e['TaskName']}* — {e['EventType']}{oom_flag}"
+        health_flag = (
+            _health_label[e["DeploymentHealthy"]]
+            if e["EventType"] == "Started" and e["DeploymentHealthy"] is not None
+            else ""
+        )
+        line = f"• *{e['TaskName']}* — {e['EventType']}{oom_flag}{health_flag}"
         if e["EventDisplayMessage"]:
             line += f"\n  _{e['EventDisplayMessage']}_"
         event_lines.append(line)
@@ -378,7 +389,13 @@ def main() -> None:  # noqa: C901
                         ).total_seconds() > max_job_age_secs:
                             continue
 
-                        dedup_key = (alloc["ID"], task_name, event_type, latest["Time"])
+                        dedup_key = (
+                            alloc["ID"],
+                            task_name,
+                            event_type,
+                            latest["Time"],
+                            deployment_healthy,
+                        )
                         task_event = {
                             "AllocationID": alloc["ID"],
                             "NodeName": alloc.get("NodeName", ""),
@@ -391,6 +408,7 @@ def main() -> None:  # noqa: C901
                             "EventMessage": latest.get("Message", ""),
                             "EventDisplayMessage": latest.get("DisplayMessage", ""),
                             "EventDetails": latest.get("Details", {}),
+                            "DeploymentHealthy": deployment_healthy,
                         }
 
                         if job_id not in job_events:
