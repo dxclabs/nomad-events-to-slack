@@ -455,6 +455,11 @@ def main() -> None:  # noqa: C901
                 # before treating it as terminal (e.g. template-change restart).
                 if not is_terminal and job["last_state"] == "Terminated":
                     is_terminal = age_secs >= TERMINATED_DEBOUNCE_SECS
+                # deployment_healthy=False means Nomad has marked the allocation
+                # unhealthy and will take no further action — report immediately.
+                # Use `is False` explicitly: None means still waiting for checks.
+                if not is_terminal and job["deployment_healthy"] is False:
+                    is_terminal = True
                 is_stale = age_secs > max_job_age_secs
                 if is_terminal or is_stale:
                     _report_and_purge(
