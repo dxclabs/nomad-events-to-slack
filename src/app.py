@@ -20,14 +20,25 @@ COLOR_DEFAULT = "#36a64f"
 CONNECT_TIMEOUT = 10
 QUEUE_POLL_SECS = 2.0
 
-# "Started" signals a restart cycle is complete; "Killed"/"Not Restarting" are
-# unconditionally terminal.  "Terminated" is handled separately with a debounce
-# so that a Terminated→Restarting→Started cycle isn't reported mid-flight.
-TERMINAL_EVENT_TYPES = frozenset({"Started", "Killed", "Not Restarting"})
+# Terminal event types keyed by Nomad job type.
+# service/system: "Started" ends a restart cycle; "Terminated" is debounced so
+#   a Terminated→Restarting→Started sequence isn't reported mid-flight.
+# batch/sysbatch: "Terminated" is the expected end state; "Started" is
+#   mid-sequence (Received→Task Setup→Started→Terminated) and must not trigger.
+TERMINAL_EVENT_TYPES: dict[str, frozenset[str]] = {
+    "service": frozenset({"Started", "Killed", "Not Restarting"}),
+    "system": frozenset({"Started", "Killed", "Not Restarting"}),
+    "batch": frozenset({"Terminated", "Killed", "Not Restarting"}),
+    "sysbatch": frozenset({"Terminated", "Killed", "Not Restarting"}),
+}
+# Fallback for unknown/unset job type — conservative superset.
+_DEFAULT_TERMINAL_EVENT_TYPES = frozenset(
+    {"Started", "Terminated", "Killed", "Not Restarting"}
+)
 
-# How long to wait after a "Terminated" event before treating it as terminal.
-# This gives Nomad time to emit the follow-up "Restarting" event for jobs that
-# are restarted by a template change or scheduler decision.
+# How long to wait after a "Terminated" event before treating it as terminal
+# for service/system jobs. Gives Nomad time to emit the follow-up "Restarting"
+# event for template-change restarts.
 TERMINATED_DEBOUNCE_SECS = 30
 
 
@@ -468,9 +479,14 @@ def main() -> None:  # noqa: C901
                 if not job["events"]:
                     continue
                 age_secs = (now - job["last_updated_at"]).total_seconds()
-                is_terminal = job["last_state"] in TERMINAL_EVENT_TYPES
-                # Debounce "Terminated": wait to see if "Restarting" follows
-                # before treating it as terminal (e.g. template-change restart).
+                terminal_types = TERMINAL_EVENT_TYPES.get(
+                    job["job_type"] or "", _DEFAULT_TERMINAL_EVENT_TYPES
+                )
+                is_terminal = job["last_state"] in terminal_types
+                # Debounce "Terminated" for service/system jobs: wait to see if
+                # "Restarting" follows before reporting (template-change restart).
+                # batch/sysbatch already have "Terminated" in their terminal set
+                # so this branch is never reached for them.
                 if not is_terminal and job["last_state"] == "Terminated":
                     is_terminal = age_secs >= TERMINATED_DEBOUNCE_SECS
                 # deployment_healthy=False means Nomad has marked the allocation
