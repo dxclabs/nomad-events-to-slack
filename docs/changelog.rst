@@ -1,6 +1,23 @@
 CHANGELOG
 ###############
 
+v0.5.0 (2026-03-16)
+===================
+
+Feat
+----
+
+- key TERMINAL_EVENT_TYPES by job type
+- show deployment health on Started events in Slack
+- treat deployment_healthy=False as a terminal state
+- capture job_type, deployment health and task states per job
+- replace polling with Nomad event stream, group events by job (#3)
+
+Fix
+---
+
+- don't treat Started as terminal while health check is pending
+
 v0.4.0 (2026-03-13)
 ===================
 
