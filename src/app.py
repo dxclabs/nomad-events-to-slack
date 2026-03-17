@@ -591,12 +591,16 @@ def main() -> None:  # noqa: C901
                     elif is_terminal or is_stale:
                         # Rule says suppress — still purge so the accumulator
                         # doesn't stall index advancement or re-report later.
+                        reason = (
+                            f"report={rule['report']}"
+                            if is_terminal
+                            else f"partial={rule['partial']}"
+                        )
                         logger.debug(
-                            "Suppressing report for %s per termination rule"
-                            " (report=%s abnormal=%s)",
+                            "Not reporting %s %s — suppressed by termination rule (%s)",
                             job["alloc_name"] or alloc_id,
-                            rule["report"],
-                            _is_abnormal(job),
+                            job["last_state"],
+                            reason,
                         )
                         _report_and_purge(
                             job["alloc_name"] or alloc_id,
