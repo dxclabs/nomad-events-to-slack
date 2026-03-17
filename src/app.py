@@ -41,6 +41,56 @@ _DEFAULT_TERMINAL_EVENT_TYPES = frozenset(
 # event for template-change restarts.
 TERMINATED_DEBOUNCE_SECS = 30
 
+# Termination reporting rules keyed by job_type, then job_id or "default".
+#
+#   report:  "always"   — send a Slack message on every terminal event
+#            "abnormal" — only send when something went wrong (OOM, unhealthy,
+#                         non-zero exit, Killed, Not Restarting)
+#            "never"    — suppress all terminal reports
+#   partial: "always"   — send a message when a job is evicted as stale
+#            "never"    — suppress stale/partial reports
+#
+# Per-job overrides sit alongside "default", e.g.:
+#   "batch": {
+#       "my-nightly-job": {"report": "always", "partial": "never"},
+#       "default": ...,
+#   }
+#
+# TODO: in future, batch jobs with a known cron schedule could report on
+#       missed runs by comparing last_reported_at against the expected cadence.
+_TerminationRule = dict[str, str]
+TERMINATION_RULES: dict[str, dict[str, _TerminationRule]] = {
+    "service": {"default": {"report": "always", "partial": "always"}},
+    "system": {"default": {"report": "always", "partial": "always"}},
+    "batch": {"default": {"report": "abnormal", "partial": "always"}},
+    "sysbatch": {"default": {"report": "abnormal", "partial": "always"}},
+}
+_DEFAULT_TERMINATION_RULE: _TerminationRule = {"report": "always", "partial": "always"}
+
+
+def _get_termination_rule(job_type: str, job_id: str) -> _TerminationRule:
+    type_rules = TERMINATION_RULES.get(job_type, {})
+    return (
+        type_rules.get(job_id) or type_rules.get("default") or _DEFAULT_TERMINATION_RULE
+    )
+
+
+def _is_abnormal(job: dict[str, Any]) -> bool:
+    """Return True if the allocation ended in an unexpected/unhealthy state."""
+    if job["meta"]["oom_kill_count"] > 0:
+        return True
+    if job["deployment_healthy"] is False:
+        return True
+    if job["last_state"] in {"Killed", "Not Restarting"}:
+        return True
+    for e in job["events"]:
+        if (
+            e["EventType"] == "Terminated"
+            and e["EventDetails"].get("exit_code", "0") != "0"
+        ):
+            return True
+    return False
+
 
 def clear_input_list(in_list: list[str]) -> None:
     while "" in in_list:
@@ -103,6 +153,7 @@ def _empty_job_record() -> dict[str, Any]:
         "last_reported_index": 0,  # highest event_index included in last report
         "max_index": 0,  # highest event_index seen in current accumulation
         "alloc_name": "",  # human-readable, e.g. "my-job.web[1]"
+        "job_id": "",  # JobID, used for termination rule lookup
         "job_type": None,  # "service", "batch", "system", "sysbatch"
         "last_state": None,
         "last_updated_at": now,
@@ -432,6 +483,7 @@ def main() -> None:  # noqa: C901
                             rec["events"] = [task_event]
                             rec["seen_keys"] = {dedup_key}
                             rec["alloc_name"] = alloc_name
+                            rec["job_id"] = job_id
                             rec["job_type"] = job_type
                             rec["last_state"] = event_type
                             rec["last_updated_at"] = event_time
@@ -461,6 +513,8 @@ def main() -> None:  # noqa: C901
                             # Update fields that may not have been set on first event
                             if alloc_name and not job["alloc_name"]:
                                 job["alloc_name"] = alloc_name
+                            if job_id and not job["job_id"]:
+                                job["job_id"] = job_id
                             if job_type and not job["job_type"]:
                                 job["job_type"] = job_type
                             job["deployment_healthy"] = deployment_healthy
@@ -517,12 +571,38 @@ def main() -> None:  # noqa: C901
                     is_terminal = True
                 is_stale = age_secs > max_job_age_secs
                 if is_terminal or is_stale:
-                    _report_and_purge(
-                        job["alloc_name"] or alloc_id,
-                        job,
-                        slack_web_hook_url,
-                        partial=is_stale and not is_terminal,
-                    )
+                    rule = _get_termination_rule(job["job_type"] or "", job["job_id"])
+                    if is_terminal and (
+                        rule["report"] == "always"
+                        or (rule["report"] == "abnormal" and _is_abnormal(job))
+                    ):
+                        _report_and_purge(
+                            job["alloc_name"] or alloc_id,
+                            job,
+                            slack_web_hook_url,
+                        )
+                    elif is_stale and rule["partial"] == "always":
+                        _report_and_purge(
+                            job["alloc_name"] or alloc_id,
+                            job,
+                            slack_web_hook_url,
+                            partial=True,
+                        )
+                    elif is_terminal or is_stale:
+                        # Rule says suppress — still purge so the accumulator
+                        # doesn't stall index advancement or re-report later.
+                        logger.debug(
+                            "Suppressing report for %s per termination rule"
+                            " (report=%s abnormal=%s)",
+                            job["alloc_name"] or alloc_id,
+                            rule["report"],
+                            _is_abnormal(job),
+                        )
+                        _report_and_purge(
+                            job["alloc_name"] or alloc_id,
+                            job,
+                            slack_hook_url="",  # empty → post_message_to_slack no-ops
+                        )
 
             # Advance the stored Consul index to the lowest start_index of any
             # job still accumulating events, so a restart resumes from there.
