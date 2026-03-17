@@ -1,6 +1,14 @@
 CHANGELOG
 ###############
 
+v0.6.0 (2026-03-17)
+===================
+
+Feat
+----
+
+- key event accumulator by allocation ID instead of job ID
+
 v0.5.0 (2026-03-16)
 ===================
 
