@@ -102,6 +102,7 @@ def _empty_job_record() -> dict[str, Any]:
         "last_reported_at": now,
         "last_reported_index": 0,  # highest event_index included in last report
         "max_index": 0,  # highest event_index seen in current accumulation
+        "alloc_name": "",  # human-readable, e.g. "my-job.web[1]"
         "job_type": None,  # "service", "batch", "system", "sysbatch"
         "last_state": None,
         "last_updated_at": now,
@@ -312,7 +313,7 @@ def main() -> None:  # noqa: C901
 
     logger.info("ENV is ok. Starting event stream (max_job_age=%ss).", max_job_age_secs)
 
-    # Per-job event accumulator: job_id → record dict
+    # Per-allocation event accumulator: alloc_id → record dict
     job_events: dict[str, dict[str, Any]] = {}
 
     # python-nomad manages the stream thread and reconnects on ConnectionError
@@ -349,15 +350,16 @@ def main() -> None:  # noqa: C901
                         continue
 
                     job_id = alloc.get("JobID", "")
-                    if not job_id:
+                    alloc_id = alloc.get("ID", "")
+                    if not job_id or not alloc_id:
                         continue
 
                     # Skip events at or below the index already covered by the
-                    # last report for this job — guards against Nomad re-emitting
-                    # stale allocation state updates after a terminal event.
+                    # last report for this allocation — guards against Nomad
+                    # re-emitting stale allocation state after a terminal event.
                     if (
-                        job_id in job_events
-                        and event_index <= job_events[job_id]["last_reported_index"]
+                        alloc_id in job_events
+                        and event_index <= job_events[alloc_id]["last_reported_index"]
                     ):
                         continue
 
@@ -366,6 +368,9 @@ def main() -> None:  # noqa: C901
                         continue
                     if job_ids and job_id not in job_ids:
                         continue
+
+                    # Human-readable allocation name, e.g. "my-job.web[1]"
+                    alloc_name = alloc.get("Name") or job_id
 
                     job_type = alloc.get("JobType", "")
                     # None = waiting, True = healthy, False = unhealthy
@@ -422,10 +427,11 @@ def main() -> None:  # noqa: C901
                             "DeploymentHealthy": deployment_healthy,
                         }
 
-                        if job_id not in job_events:
+                        if alloc_id not in job_events:
                             rec = _empty_job_record()
                             rec["events"] = [task_event]
                             rec["seen_keys"] = {dedup_key}
+                            rec["alloc_name"] = alloc_name
                             rec["job_type"] = job_type
                             rec["last_state"] = event_type
                             rec["last_updated_at"] = event_time
@@ -433,26 +439,28 @@ def main() -> None:  # noqa: C901
                             rec["max_index"] = event_index
                             rec["deployment_healthy"] = deployment_healthy
                             rec["task_states"] = {task_name: task_state}
-                            job_events[job_id] = rec
+                            job_events[alloc_id] = rec
                             _update_meta(
                                 rec["meta"], event_type, latest.get("Details", {})
                             )
                             logger.debug(
-                                "New job tracked: %s (%s) index=%s"
+                                "New alloc tracked: %s (%s) index=%s"
                                 " | state=%s deployment_healthy=%s task_states=%s",
-                                job_id,
+                                alloc_name,
                                 job_type,
                                 event_index,
                                 event_type,
                                 deployment_healthy,
                                 rec["task_states"],
                             )
-                        elif dedup_key not in job_events[job_id]["seen_keys"]:
-                            job = job_events[job_id]
+                        elif dedup_key not in job_events[alloc_id]["seen_keys"]:
+                            job = job_events[alloc_id]
                             job["events"].append(task_event)
                             job["seen_keys"].add(dedup_key)
                             job["last_state"] = event_type
-                            # Update job_type if it wasn't populated on first event
+                            # Update fields that may not have been set on first event
+                            if alloc_name and not job["alloc_name"]:
+                                job["alloc_name"] = alloc_name
                             if job_type and not job["job_type"]:
                                 job["job_type"] = job_type
                             job["deployment_healthy"] = deployment_healthy
@@ -467,7 +475,7 @@ def main() -> None:  # noqa: C901
                             logger.debug(
                                 "%s (%s) index=%s"
                                 " | state=%s deployment_healthy=%s task_states=%s",
-                                job_id,
+                                job["alloc_name"],
                                 job["job_type"],
                                 event_index,
                                 event_type,
@@ -475,10 +483,10 @@ def main() -> None:  # noqa: C901
                                 job["task_states"],
                             )
 
-            # Report any job that has reached a terminal state or gone stale
+            # Report any allocation that has reached a terminal state or gone stale
             now = datetime.now(UTC)
-            for job_id in list(job_events.keys()):
-                job = job_events[job_id]
+            for alloc_id in list(job_events.keys()):
+                job = job_events[alloc_id]
                 if not job["events"]:
                     continue
                 age_secs = (now - job["last_updated_at"]).total_seconds()
@@ -510,7 +518,7 @@ def main() -> None:  # noqa: C901
                 is_stale = age_secs > max_job_age_secs
                 if is_terminal or is_stale:
                     _report_and_purge(
-                        job_id,
+                        job["alloc_name"] or alloc_id,
                         job,
                         slack_web_hook_url,
                         partial=is_stale and not is_terminal,
