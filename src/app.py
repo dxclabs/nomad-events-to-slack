@@ -572,9 +572,21 @@ def main() -> None:  # noqa: C901
                 is_stale = age_secs > max_job_age_secs
                 if is_terminal or is_stale:
                     rule = _get_termination_rule(job["job_type"] or "", job["job_id"])
+                    abnormal = _is_abnormal(job)
+                    logger.debug(
+                        "%s %s — job_type=%s rule=%s abnormal=%s is_terminal=%s"
+                        " is_stale=%s",
+                        job["alloc_name"] or alloc_id,
+                        job["last_state"],
+                        job["job_type"],
+                        rule,
+                        abnormal,
+                        is_terminal,
+                        is_stale,
+                    )
                     if is_terminal and (
                         rule["report"] == "always"
-                        or (rule["report"] == "abnormal" and _is_abnormal(job))
+                        or (rule["report"] == "abnormal" and abnormal)
                     ):
                         _report_and_purge(
                             job["alloc_name"] or alloc_id,
