@@ -100,6 +100,21 @@ def _is_abnormal(job: dict[str, Any]) -> bool:
     return False
 
 
+def _get_job_type(job_id: str) -> str:
+    """Infer job type from JobID.
+
+    Nomad allocation events don't include a JobType field, so we derive it
+    from the JobID where we can. Periodic jobs have the form:
+      <parent-job-id>/periodic-<unix-timestamp>
+
+    Returns 'batch' for periodic jobs, '' otherwise (unknown — a future
+    implementation could query the Nomad Job API to resolve service/system).
+    """
+    if "/periodic-" in job_id:
+        return "batch"
+    return ""
+
+
 def clear_input_list(in_list: list[str]) -> None:
     while "" in in_list:
         in_list.remove("")
@@ -445,7 +460,7 @@ def main() -> None:  # noqa: C901
                     # Human-readable allocation name, e.g. "my-job.web[1]"
                     alloc_name = alloc.get("Name") or job_id
 
-                    job_type = alloc.get("JobType", "")
+                    job_type = _get_job_type(job_id)
                     # None = waiting, True = healthy, False = unhealthy
                     deployment_healthy = (alloc.get("DeploymentStatus") or {}).get(
                         "Healthy"

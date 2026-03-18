@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import pytest
 
 from app import (
+    _get_job_type,
     _get_termination_rule,
     _is_abnormal,
     _update_meta,
@@ -98,6 +99,29 @@ def _terminated_event(exit_code: str = "0") -> dict:
         "EventType": "Terminated",
         "EventDetails": {"exit_code": exit_code},
     }
+
+
+# ---------------------------------------------------------------------------
+# TestGetJobType
+# ---------------------------------------------------------------------------
+
+
+class TestGetJobType:
+    def test_periodic_job_returns_batch(self):
+        assert _get_job_type("my-cron/periodic-1773827100") == "batch"
+
+    def test_periodic_job_with_nested_path(self):
+        assert _get_job_type("esg-netsuite-cron/periodic-1773751021") == "batch"
+
+    def test_service_job_returns_empty(self):
+        assert _get_job_type("my-web-service") == ""
+
+    def test_job_with_periodic_in_name_but_no_slash(self):
+        # "periodic-" must be preceded by "/" to match
+        assert _get_job_type("my-periodic-job") == ""
+
+    def test_empty_job_id_returns_empty(self):
+        assert _get_job_type("") == ""
 
 
 # ---------------------------------------------------------------------------
