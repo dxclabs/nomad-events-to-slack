@@ -17,6 +17,12 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logging.basicConfig(level=logging.INFO)
 
+# Separate logger for raw Nomad stream events — file-only, never console.
+# Configured (or left as a no-op NullHandler) in main() based on debug flag.
+stream_logger = logging.getLogger("nomad.stream")
+stream_logger.propagate = False
+stream_logger.addHandler(logging.NullHandler())
+
 COLOR_OOM = "#d72b3f"
 COLOR_DEFAULT = "#36a64f"
 CONNECT_TIMEOUT = 10
@@ -318,15 +324,17 @@ def main() -> None:  # noqa: C901
         logging.basicConfig(level=logging.DEBUG)
         _log_dir = Path(__file__).parent.parent / "logs"
         _log_dir.mkdir(exist_ok=True)
+        _stream_log = _log_dir / "stream.log"
         _fh = logging.handlers.RotatingFileHandler(
-            _log_dir / "stream.log",
+            _stream_log,
             maxBytes=100_000,
             backupCount=3,
         )
         _fh.setLevel(logging.DEBUG)
-        _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-        logger.addHandler(_fh)
-        logger.debug("Stream log: %s", _log_dir / "stream.log")
+        _fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+        stream_logger.addHandler(_fh)
+        stream_logger.setLevel(logging.DEBUG)
+        logger.debug("Raw event stream log: %s", _stream_log)
     else:
         logger.setLevel(logging.INFO)
         logging.basicConfig(level=logging.INFO)
@@ -402,6 +410,7 @@ def main() -> None:  # noqa: C901
                 event_queue.task_done()
 
             if batch is not None:
+                stream_logger.debug(json.dumps(batch, default=str))
                 for stream_event in batch.get("Events") or []:
                     event_index = int(stream_event.get("Index") or 0)
 
