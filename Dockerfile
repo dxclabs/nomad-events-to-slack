@@ -41,6 +41,7 @@ RUN echo BRANCH_NAME=${BRANCH_NAME} >> .env && \
     echo TAG_NAME=${TAG_NAME} >> .env
 
 COPY --chown=appuser:appgroup src/ src/
+COPY --chown=appuser:appgroup logs/ logs/
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1

@@ -1,9 +1,11 @@
 import http.client
 import json
 import logging
+import logging.handlers
 import os
 import queue
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -314,6 +316,17 @@ def main() -> None:  # noqa: C901
     if os.getenv("NOMAD_EVENTS_TO_SLACK_DEBUG", "false") == "true":
         logger.setLevel(logging.DEBUG)
         logging.basicConfig(level=logging.DEBUG)
+        _log_dir = Path(__file__).parent.parent / "logs"
+        _log_dir.mkdir(exist_ok=True)
+        _fh = logging.handlers.RotatingFileHandler(
+            _log_dir / "stream.log",
+            maxBytes=100_000,
+            backupCount=3,
+        )
+        _fh.setLevel(logging.DEBUG)
+        _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(_fh)
+        logger.debug("Stream log: %s", _log_dir / "stream.log")
     else:
         logger.setLevel(logging.INFO)
         logging.basicConfig(level=logging.INFO)
