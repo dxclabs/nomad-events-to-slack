@@ -4,6 +4,9 @@ from datetime import UTC, datetime
 import pytest
 
 from app import (
+    _get_job_type,
+    _get_termination_rule,
+    _is_abnormal,
     _update_meta,
     clear_input_list,
     format_job_events_to_slack,
@@ -64,6 +67,153 @@ def task_event_oom():
         "EventDetails": {"exit_code": "137", "oom_killed": "true"},
         "DeploymentHealthy": None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_job(
+    *,
+    job_type: str = "batch",
+    last_state: str = "Terminated",
+    deployment_healthy: bool | None = None,
+    oom_kill_count: int = 0,
+    events: list | None = None,
+) -> dict:
+    """Minimal job record for testing terminal logic helpers."""
+    return {
+        "job_type": job_type,
+        "job_id": "my-batch-job",
+        "alloc_name": "my-batch-job.run[0]",
+        "last_state": last_state,
+        "deployment_healthy": deployment_healthy,
+        "events": events or [],
+        "meta": _default_meta(oom_kill_count=oom_kill_count),
+    }
+
+
+def _terminated_event(exit_code: str = "0") -> dict:
+    return {
+        "EventType": "Terminated",
+        "EventDetails": {"exit_code": exit_code},
+    }
+
+
+# ---------------------------------------------------------------------------
+# TestGetJobType
+# ---------------------------------------------------------------------------
+
+
+class TestGetJobType:
+    def test_periodic_job_returns_batch(self):
+        assert _get_job_type("my-cron/periodic-1773827100") == "batch"
+
+    def test_periodic_job_with_nested_path(self):
+        assert _get_job_type("esg-netsuite-cron/periodic-1773751021") == "batch"
+
+    def test_service_job_returns_empty(self):
+        assert _get_job_type("my-web-service") == ""
+
+    def test_job_with_periodic_in_name_but_no_slash(self):
+        # "periodic-" must be preceded by "/" to match
+        assert _get_job_type("my-periodic-job") == ""
+
+    def test_empty_job_id_returns_empty(self):
+        assert _get_job_type("") == ""
+
+
+# ---------------------------------------------------------------------------
+# TestIsAbnormal
+# ---------------------------------------------------------------------------
+
+
+class TestIsAbnormal:
+    def test_clean_batch_termination_is_not_abnormal(self):
+        job = _make_job(events=[_terminated_event("0")])
+        assert _is_abnormal(job) is False
+
+    def test_nonzero_exit_code_is_abnormal(self):
+        job = _make_job(events=[_terminated_event("1")])
+        assert _is_abnormal(job) is True
+
+    def test_exit_137_is_abnormal(self):
+        job = _make_job(events=[_terminated_event("137")])
+        assert _is_abnormal(job) is True
+
+    def test_oom_kill_is_abnormal(self):
+        job = _make_job(oom_kill_count=1, events=[_terminated_event("0")])
+        assert _is_abnormal(job) is True
+
+    def test_deployment_unhealthy_is_abnormal(self):
+        job = _make_job(deployment_healthy=False)
+        assert _is_abnormal(job) is True
+
+    def test_deployment_healthy_true_is_not_abnormal(self):
+        job = _make_job(
+            job_type="service",
+            last_state="Started",
+            deployment_healthy=True,
+            events=[_terminated_event("0")],
+        )
+        assert _is_abnormal(job) is False
+
+    def test_killed_state_is_abnormal(self):
+        job = _make_job(last_state="Killed")
+        assert _is_abnormal(job) is True
+
+    def test_not_restarting_state_is_abnormal(self):
+        job = _make_job(last_state="Not Restarting")
+        assert _is_abnormal(job) is True
+
+    def test_started_state_with_clean_events_is_not_abnormal(self):
+        job = _make_job(
+            job_type="service", last_state="Started", deployment_healthy=True
+        )
+        assert _is_abnormal(job) is False
+
+    def test_non_terminated_event_types_ignored_for_exit_code(self):
+        # A "Killing" event with no exit_code should not trigger abnormal
+        job = _make_job(
+            last_state="Killing",
+            events=[{"EventType": "Killing", "EventDetails": {}}],
+        )
+        assert _is_abnormal(job) is False
+
+
+# ---------------------------------------------------------------------------
+# TestGetTerminationRule
+# ---------------------------------------------------------------------------
+
+
+class TestGetTerminationRule:
+    def test_service_default_reports_always(self):
+        rule = _get_termination_rule("service", "any-job")
+        assert rule["report"] == "always"
+        assert rule["partial"] == "always"
+
+    def test_system_default_reports_always(self):
+        rule = _get_termination_rule("system", "any-job")
+        assert rule["report"] == "always"
+
+    def test_batch_default_reports_abnormal(self):
+        rule = _get_termination_rule("batch", "any-job")
+        assert rule["report"] == "abnormal"
+        assert rule["partial"] == "always"
+
+    def test_sysbatch_default_reports_abnormal(self):
+        rule = _get_termination_rule("sysbatch", "any-job")
+        assert rule["report"] == "abnormal"
+
+    def test_unknown_job_type_falls_back_to_default_rule(self):
+        # Empty string or unrecognised type should not suppress
+        rule = _get_termination_rule("", "any-job")
+        assert rule["report"] == "always"
+
+    def test_unknown_job_type_none_falls_back(self):
+        rule = _get_termination_rule("widget", "any-job")
+        assert rule["report"] == "always"
 
 
 # ---------------------------------------------------------------------------
