@@ -2,6 +2,6 @@ colorama==0.4.6 ; python_version >= "3.12" and python_version < "3.14" and sys_p
 iniconfig==2.3.0 ; python_version >= "3.12" and python_version < "3.14"
 packaging==26.0 ; python_version >= "3.12" and python_version < "3.14"
 pluggy==1.6.0 ; python_version >= "3.12" and python_version < "3.14"
-pygments==2.19.2 ; python_version >= "3.12" and python_version < "3.14"
+pygments==2.20.0 ; python_version >= "3.12" and python_version < "3.14"
 pytest-mock==3.15.1 ; python_version >= "3.12" and python_version < "3.14"
 pytest==8.4.2 ; python_version >= "3.12" and python_version < "3.14"
