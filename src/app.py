@@ -1,9 +1,11 @@
 import http.client
 import json
 import logging
+import logging.handlers
 import os
 import queue
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -14,6 +16,12 @@ import requests
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logging.basicConfig(level=logging.INFO)
+
+# Separate logger for raw Nomad stream events — file-only, never console.
+# Configured (or left as a no-op NullHandler) in main() based on debug flag.
+stream_logger = logging.getLogger("nomad.stream")
+stream_logger.propagate = False
+stream_logger.addHandler(logging.NullHandler())
 
 COLOR_OOM = "#d72b3f"
 COLOR_DEFAULT = "#36a64f"
@@ -40,6 +48,71 @@ _DEFAULT_TERMINAL_EVENT_TYPES = frozenset(
 # for service/system jobs. Gives Nomad time to emit the follow-up "Restarting"
 # event for template-change restarts.
 TERMINATED_DEBOUNCE_SECS = 30
+
+# Termination reporting rules keyed by job_type, then job_id or "default".
+#
+#   report:  "always"   — send a Slack message on every terminal event
+#            "abnormal" — only send when something went wrong (OOM, unhealthy,
+#                         non-zero exit, Killed, Not Restarting)
+#            "never"    — suppress all terminal reports
+#   partial: "always"   — send a message when a job is evicted as stale
+#            "never"    — suppress stale/partial reports
+#
+# Per-job overrides sit alongside "default", e.g.:
+#   "batch": {
+#       "my-nightly-job": {"report": "always", "partial": "never"},
+#       "default": ...,
+#   }
+#
+# TODO: in future, batch jobs with a known cron schedule could report on
+#       missed runs by comparing last_reported_at against the expected cadence.
+_TerminationRule = dict[str, str]
+TERMINATION_RULES: dict[str, dict[str, _TerminationRule]] = {
+    "service": {"default": {"report": "always", "partial": "always"}},
+    "system": {"default": {"report": "always", "partial": "always"}},
+    "batch": {"default": {"report": "abnormal", "partial": "always"}},
+    "sysbatch": {"default": {"report": "abnormal", "partial": "always"}},
+}
+_DEFAULT_TERMINATION_RULE: _TerminationRule = {"report": "always", "partial": "always"}
+
+
+def _get_termination_rule(job_type: str, job_id: str) -> _TerminationRule:
+    type_rules = TERMINATION_RULES.get(job_type, {})
+    return (
+        type_rules.get(job_id) or type_rules.get("default") or _DEFAULT_TERMINATION_RULE
+    )
+
+
+def _is_abnormal(job: dict[str, Any]) -> bool:
+    """Return True if the allocation ended in an unexpected/unhealthy state."""
+    if job["meta"]["oom_kill_count"] > 0:
+        return True
+    if job["deployment_healthy"] is False:
+        return True
+    if job["last_state"] in {"Killed", "Not Restarting"}:
+        return True
+    for e in job["events"]:
+        if (
+            e["EventType"] == "Terminated"
+            and e["EventDetails"].get("exit_code", "0") != "0"
+        ):
+            return True
+    return False
+
+
+def _get_job_type(job_id: str) -> str:
+    """Infer job type from JobID.
+
+    Nomad allocation events don't include a JobType field, so we derive it
+    from the JobID where we can. Periodic jobs have the form:
+      <parent-job-id>/periodic-<unix-timestamp>
+
+    Returns 'batch' for periodic jobs, '' otherwise (unknown — a future
+    implementation could query the Nomad Job API to resolve service/system).
+    """
+    if "/periodic-" in job_id:
+        return "batch"
+    return ""
 
 
 def clear_input_list(in_list: list[str]) -> None:
@@ -103,6 +176,7 @@ def _empty_job_record() -> dict[str, Any]:
         "last_reported_index": 0,  # highest event_index included in last report
         "max_index": 0,  # highest event_index seen in current accumulation
         "alloc_name": "",  # human-readable, e.g. "my-job.web[1]"
+        "job_id": "",  # JobID, used for termination rule lookup
         "job_type": None,  # "service", "batch", "system", "sysbatch"
         "last_state": None,
         "last_updated_at": now,
@@ -169,7 +243,7 @@ def format_job_events_to_slack(
         event_lines.append(line)
 
     nodes = sorted({e["NodeName"] for e in events})
-    earliest_time = min(e["Time"] for e in events).strftime("%Y-%m-%d %H:%M:%S")
+    earliest_time = min(e["Time"] for e in events).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     context_elements: list[dict[str, Any]] = [
         {"type": "mrkdwn", "text": f"*Nodes:* {', '.join(nodes)}"},
@@ -263,6 +337,19 @@ def main() -> None:  # noqa: C901
     if os.getenv("NOMAD_EVENTS_TO_SLACK_DEBUG", "false") == "true":
         logger.setLevel(logging.DEBUG)
         logging.basicConfig(level=logging.DEBUG)
+        _log_dir = Path(__file__).parent.parent / "logs"
+        _log_dir.mkdir(exist_ok=True)
+        _stream_log = _log_dir / "stream.log"
+        _fh = logging.handlers.RotatingFileHandler(
+            _stream_log,
+            maxBytes=100_000,
+            backupCount=3,
+        )
+        _fh.setLevel(logging.DEBUG)
+        _fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+        stream_logger.addHandler(_fh)
+        stream_logger.setLevel(logging.DEBUG)
+        logger.debug("Raw event stream log: %s", _stream_log)
     else:
         logger.setLevel(logging.INFO)
         logging.basicConfig(level=logging.INFO)
@@ -338,6 +425,7 @@ def main() -> None:  # noqa: C901
                 event_queue.task_done()
 
             if batch is not None:
+                stream_logger.debug(json.dumps(batch, default=str))
                 for stream_event in batch.get("Events") or []:
                     event_index = int(stream_event.get("Index") or 0)
 
@@ -372,7 +460,7 @@ def main() -> None:  # noqa: C901
                     # Human-readable allocation name, e.g. "my-job.web[1]"
                     alloc_name = alloc.get("Name") or job_id
 
-                    job_type = alloc.get("JobType", "")
+                    job_type = _get_job_type(job_id)
                     # None = waiting, True = healthy, False = unhealthy
                     deployment_healthy = (alloc.get("DeploymentStatus") or {}).get(
                         "Healthy"
@@ -432,6 +520,7 @@ def main() -> None:  # noqa: C901
                             rec["events"] = [task_event]
                             rec["seen_keys"] = {dedup_key}
                             rec["alloc_name"] = alloc_name
+                            rec["job_id"] = job_id
                             rec["job_type"] = job_type
                             rec["last_state"] = event_type
                             rec["last_updated_at"] = event_time
@@ -461,6 +550,8 @@ def main() -> None:  # noqa: C901
                             # Update fields that may not have been set on first event
                             if alloc_name and not job["alloc_name"]:
                                 job["alloc_name"] = alloc_name
+                            if job_id and not job["job_id"]:
+                                job["job_id"] = job_id
                             if job_type and not job["job_type"]:
                                 job["job_type"] = job_type
                             job["deployment_healthy"] = deployment_healthy
@@ -517,12 +608,54 @@ def main() -> None:  # noqa: C901
                     is_terminal = True
                 is_stale = age_secs > max_job_age_secs
                 if is_terminal or is_stale:
-                    _report_and_purge(
+                    rule = _get_termination_rule(job["job_type"] or "", job["job_id"])
+                    abnormal = _is_abnormal(job)
+                    logger.debug(
+                        "%s %s — job_type=%s rule=%s abnormal=%s is_terminal=%s"
+                        " is_stale=%s",
                         job["alloc_name"] or alloc_id,
-                        job,
-                        slack_web_hook_url,
-                        partial=is_stale and not is_terminal,
+                        job["last_state"],
+                        job["job_type"],
+                        rule,
+                        abnormal,
+                        is_terminal,
+                        is_stale,
                     )
+                    if is_terminal and (
+                        rule["report"] == "always"
+                        or (rule["report"] == "abnormal" and abnormal)
+                    ):
+                        _report_and_purge(
+                            job["alloc_name"] or alloc_id,
+                            job,
+                            slack_web_hook_url,
+                        )
+                    elif is_stale and rule["partial"] == "always":
+                        _report_and_purge(
+                            job["alloc_name"] or alloc_id,
+                            job,
+                            slack_web_hook_url,
+                            partial=True,
+                        )
+                    elif is_terminal or is_stale:
+                        # Rule says suppress — still purge so the accumulator
+                        # doesn't stall index advancement or re-report later.
+                        reason = (
+                            f"report={rule['report']}"
+                            if is_terminal
+                            else f"partial={rule['partial']}"
+                        )
+                        logger.debug(
+                            "Not reporting %s %s — suppressed by termination rule (%s)",
+                            job["alloc_name"] or alloc_id,
+                            job["last_state"],
+                            reason,
+                        )
+                        _report_and_purge(
+                            job["alloc_name"] or alloc_id,
+                            job,
+                            slack_hook_url="",  # empty → post_message_to_slack no-ops
+                        )
 
             # Advance the stored Consul index to the lowest start_index of any
             # job still accumulating events, so a restart resumes from there.
