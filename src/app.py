@@ -243,7 +243,7 @@ def format_job_events_to_slack(
         event_lines.append(line)
 
     nodes = sorted({e["NodeName"] for e in events})
-    earliest_time = min(e["Time"] for e in events).strftime("%Y-%m-%d %H:%M:%S")
+    earliest_time = min(e["Time"] for e in events).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     context_elements: list[dict[str, Any]] = [
         {"type": "mrkdwn", "text": f"*Nodes:* {', '.join(nodes)}"},
